@@ -13,4 +13,4 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = "ProxyFlow"
-include(":app")
+include(":app", ":probe")

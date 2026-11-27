@@ -15,6 +15,7 @@ log() { echo "$*" | tee -a $REPORT; }
 adb wait-for-device
 log "Device: $(adb shell getprop ro.product.model | tr -d '\r') · Android $(adb shell getprop ro.build.version.release | tr -d '\r') (API $(adb shell getprop ro.build.version.sdk | tr -d '\r'))"
 adb install -r -g "$APK" > /dev/null || { log "FAIL install"; exit 1; }
+adb install -r -g dist/probe-debug.apk > /dev/null || { log "FAIL install probe"; exit 1; }
 adb shell appops set $PKG ACTIVATE_VPN allow
 adb shell cmd deviceidle whitelist +$PKG > /dev/null 2>&1 || true
 adb logcat -b crash -c
@@ -39,19 +40,14 @@ disconnect() {
   sleep 2
 }
 
-probe() { # HTTP request from the device shell (shell UID is routed through the VPN)
-  adb shell "printf 'GET /generate_204 HTTP/1.1\r\nHost: www.gstatic.com\r\nConnection: close\r\n\r\n' | (nc -w 15 www.gstatic.com 80 || toybox nc -w 15 www.gstatic.com 80)" 2>/dev/null | head -1 | tr -d '\r'
-}
-
-dump_diag() {
-  {
-    echo "--- app log ---"; adb logcat -d -s ProxyFlowLog:I ProxyFlowState:I | tail -25
-    echo "--- crash ---"; adb logcat -d -b crash | grep -E "Abort message|signal [0-9]+|#0[0-9] pc|JNI|Exception|Caused by|at com.proxyflow" | head -25
-    echo "--- routing ---"; adb shell ip route get 1.1.1.1 uid 2000 2>&1 | head -2
-    adb shell ip rule 2>&1 | grep -iE "tun|uidrange|vpn" | head -12
-    adb shell ip addr 2>&1 | grep -E "tun[0-9]" -A2 | head -6
-    adb shell dumpsys connectivity 2>/dev/null | grep -E "NetworkAgentInfo.*VPN" | head -2 | cut -c1-200
-  } | tee -a $REPORT
+probe() { # one HTTP request from a separate, ordinary app (own UID) — like any app on the phone
+  adb shell am start -n com.proxyflow.probe/.ProbeActivity > /dev/null
+  for _ in $(seq 1 25); do
+    local l; l=$(adb logcat -d -s ProxyFlowProbe:I | grep -E "PROBE" | tail -1)
+    [ -n "$l" ] && { echo "${l#*ProxyFlowProbe: }"; return; }
+    sleep 1
+  done
+  echo "PROBE_TIMEOUT"
 }
 
 run_case() { # name expect(ok|error:<text>) proof(xray|nat:<net>) kind(link|ovpn) value [user pass]
@@ -85,9 +81,10 @@ run_case() { # name expect(ok|error:<text>) proof(xray|nat:<net>) kind(link|ovpn
            pk=$(sudo iptables -L FORWARD -v -n -x | awk -v n="$net/24" '$8 == n {print $1; exit}')
            [ "${pk:-0}" -gt 0 ] && ok_proof=yes; detail="VPN server forwarded ${pk:-0} packet(s) from the tunnel subnet $net/24 to the Internet";;
   esac
+  sleep 2
   local traffic; traffic=$(adb logcat -d -s ProxyFlowState:I | grep TRAFFIC | tail -1 | sed 's/.*TRAFFIC //')
-  if [[ "$resp" == *" 204"* && $ok_proof == yes ]]; then
-    log "PASS $name — device got '$resp' through the tunnel; $detail; app counters: ${traffic:-none}"; pass=$((pass+1))
+  if [[ "$resp" == "PROBE 204" && $ok_proof == yes ]]; then
+    log "PASS $name — test app got HTTP 204 through the tunnel; $detail; ProxyFlow counters: ${traffic:-none}"; pass=$((pass+1))
   else
     log "FAIL $name — response='$resp' proof=$ok_proof ($detail)"; dump_diag; failn=$((failn+1))
   fi

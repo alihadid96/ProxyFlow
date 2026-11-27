@@ -63,7 +63,7 @@ jobs:
         run: ./scripts/e2e-xray.sh
 
       - name: Assemble debug and release APKs
-        run: ./gradlew --no-daemon assembleDebug assembleRelease -PxrayVersion=$XRAY_VERSION -PhevVersion=$HEV_VERSION -PicsVersion=$ICS_VERSION
+        run: ./gradlew --no-daemon assembleDebug :app:assembleRelease -PxrayVersion=$XRAY_VERSION -PhevVersion=$HEV_VERSION -PicsVersion=$ICS_VERSION
 
       - name: Verify APK contents
         run: |
@@ -77,6 +77,7 @@ jobs:
           mkdir -p dist
           cp app/build/outputs/apk/release/*.apk dist/
           cp app/build/outputs/apk/debug/*.apk dist/
+          cp probe/build/outputs/apk/debug/probe-debug.apk dist/
           cp e2e-report.txt dist/ || true
           ls -la dist
 
@@ -142,7 +143,7 @@ jobs:
         run: |
           TAG="build-${{ github.run_number }}"
           ls -la dist
-          gh release create "$TAG" dist/*.apk dist/*.txt --title "ProxyFlow 1.1.0 (build ${{ github.run_number }})" \
+          gh release create "$TAG" dist/app-*.apk dist/*.txt --title "ProxyFlow 1.1.0 (build ${{ github.run_number }})" \
             --notes "Automated build from ${{ github.sha }}. On-device emulator test: $E2E. Install app-arm64-v8a-release.apk on most modern phones, or app-universal-release.apk if unsure." \
             --target "${{ github.sha }}"
 
