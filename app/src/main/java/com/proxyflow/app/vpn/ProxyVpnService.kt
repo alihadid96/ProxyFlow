@@ -412,7 +412,9 @@ class ProxyVpnService : VpnService() {
         cfg.domains.forEach { runCatching { b.addSearchDomain(it) } }
 
         if (Build.VERSION.SDK_INT >= 33) {
-            cfg.excludedRoutes.forEach { (n, pre) -> runCatching { b.excludeRoute(IpPrefix(InetAddress.getByName(n), pre)) } }
+            // Never exclude a default-route half when sending everything through the VPN (that would leak).
+            cfg.excludedRoutes.filter { (_, pre) -> !(p.ovpnFullTunnel && pre < 8) }
+                .forEach { (n, pre) -> runCatching { b.excludeRoute(IpPrefix(InetAddress.getByName(n), pre)) } }
             if (s.bypassLan && p.ovpnFullTunnel) {
                 val v4net = OvpnConfig.networkAddress(v4, cfg.prefix4)
                 lanRanges.filter { (net, pre) ->
@@ -445,7 +447,9 @@ class ProxyVpnService : VpnService() {
         val old = tun
         tun = pfd
         runCatching { old?.close() }
-        VpnState.log("VPN interface up: $v4/${cfg.prefix4}, MTU ${cfg.mtu}, DNS ${dns.joinToString()}")
+        VpnState.log("VPN interface up: $v4/${cfg.prefix4}, MTU ${cfg.mtu}, DNS ${dns.joinToString()}, " +
+            "routes ${if (p.ovpnFullTunnel) "0.0.0.0/0" else cfg.routes.joinToString { "${it.first}/${it.second}" }}" +
+            if (cfg.excludedRoutes.isEmpty()) "" else ", excluded ${cfg.excludedRoutes.joinToString { "${it.first}/${it.second}" }}")
         return pfd
     }
 

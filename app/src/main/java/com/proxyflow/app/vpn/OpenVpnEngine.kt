@@ -271,7 +271,7 @@ class OpenVpnEngine(
                 if (prefix != null && AddressUtil.isIpv4(p[0])) {
                     val dev = if (p.size >= 5) p[4] else null
                     val route = OvpnConfig.networkAddress(p[0], prefix) to prefix
-                    pending = if (dev == null || dev.startsWith("tun")) pending.copy(routes = pending.routes + route)
+                    pending = if (isTunDevice(dev)) pending.copy(routes = pending.routes + route)
                     else pending.copy(excludedRoutes = pending.excludedRoutes + route)
                 }
             }
@@ -310,6 +310,13 @@ class OpenVpnEngine(
         }
         command("needok '$needed' $status\n")
     }
+
+    /**
+     * Routes through the VPN are reported with OpenVPN's Android tun name ("vpnservice-tun"); routes via
+     * any other device (e.g. "dev wlan0" for net_gateway) must bypass the tunnel.
+     */
+    private fun isTunDevice(dev: String?) =
+        dev == null || dev == "(null)" || dev == "vpnservice-tun" || dev.startsWith("tun")
 
     private fun pollFd(): FileDescriptor? = synchronized(fdQueue) { fdQueue.pollFirst() }
 
