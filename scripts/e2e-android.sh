@@ -86,16 +86,22 @@ run_case() { # name expect(ok|error:<text>) proof(xray|nat:<net>) kind(link|ovpn
   # Give ConnectivityService a moment to apply the VPN's routes/UID ranges.
   for _ in $(seq 1 10); do adb shell dumpsys connectivity 2>/dev/null | grep -q "VPN CONNECTED\|VPN.*CONNECTED" && break; sleep 1; done
   sleep 3
-  local before_rx=0; [[ $proof == ovpn:* ]] && { sleep 2; before_rx=$(ovpn_rx ${proof#ovpn:}); }
+  local cap_pid=""
+  if [[ $proof == ovpn:* ]]; then
+    # Capture on the VPN server's tun interface: the request must arrive there, from the phone's tunnel IP.
+    local ifc=$([ ${proof#ovpn:} = udp ] && echo tun10 || echo tun11)
+    sudo timeout 40 tcpdump -lni $ifc 'tcp port 80 or port 53' > $W/cap.txt 2>/dev/null &
+    cap_pid=$!; sleep 2
+  fi
   local resp; resp=$(probe)
-  [[ $proof == ovpn:* ]] && sleep 3
+  if [ -n "$cap_pid" ]; then sleep 2; sudo pkill -f "tcpdump -lni" || true; wait $cap_pid 2>/dev/null; fi
   local ok_proof=no detail=""
   case $proof in
     xray) grep -q "www.gstatic.com:80" $W/access.log && ok_proof=yes; detail="upstream access log: $(grep -c accepted $W/access.log) connection(s)";;
-    ovpn:*) local st=${proof#ovpn:}; local after
-           after=$(ovpn_rx $st)
-           [ $((after - before_rx)) -gt 300 ] && ok_proof=yes
-           detail="OpenVPN server received $((after - before_rx)) bytes from the phone's tunnel during the request";;
+    ovpn:*) local n80 n53
+           n80=$(grep -c "\.80[: ]" $W/cap.txt || true); n53=$(grep -c "\.53[: ]" $W/cap.txt || true)
+           [ "${n80:-0}" -gt 0 ] && ok_proof=yes
+           detail="VPN server's tun saw ${n80:-0} HTTP and ${n53:-0} DNS packet(s) from the phone (e.g. $(head -1 $W/cap.txt | cut -c1-90))";;
   esac
   sleep 2
   local traffic; traffic=$(adb logcat -d -s ProxyFlowState:I | grep TRAFFIC | tail -1 | sed 's/.*TRAFFIC //')

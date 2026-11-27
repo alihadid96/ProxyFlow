@@ -15,6 +15,9 @@ class XrayProcess(
     private val onLog: (String) -> Unit,
 ) {
     @Volatile private var process: Process? = null
+    /** True once [stop] was called: an exit after that is intentional, not a crash. */
+    @Volatile var stoppedIntentionally = false
+        private set
     private val tail = ArrayDeque<String>()
 
     val isAlive: Boolean get() = process?.isAlive == true
@@ -75,6 +78,7 @@ class XrayProcess(
     fun waitFor(): Int = process?.waitFor() ?: -1
 
     fun stop() {
+        stoppedIntentionally = true
         val p = process ?: return
         process = null
         runCatching {

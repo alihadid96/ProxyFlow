@@ -26,7 +26,7 @@ JSON
 nohup ./xray run -c upstream.json > xray.log 2>&1 &
 
 # ---------- OpenVPN servers ----------
-sudo apt-get install -y -qq openvpn > /dev/null
+sudo apt-get install -y -qq openvpn tcpdump > /dev/null
 openvpn --version | head -1
 ec="-newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes"
 openssl req -x509 $ec -keyout ca.key -out ca.crt -days 3 -subj "/CN=ProxyFlow CI CA" 2>/dev/null

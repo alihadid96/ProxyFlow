@@ -227,6 +227,7 @@ class ProxyVpnService : VpnService() {
             VpnState.log("Connected via ${p.protocol.label} ${p.displayServer()}")
             updateNotification(ConnState.CONNECTED, p.name)
             eventNotification("Connected", "${p.name} · ${p.protocol.label}")
+            sessionStartedAt = System.currentTimeMillis()
             registerNetworkCallback()
             startSessionJobs()
         } catch (e: Exception) {
@@ -532,7 +533,7 @@ class ProxyVpnService : VpnService() {
         watchdog?.cancel()
         watchdog = scope.launch {
             val code = x.waitFor()
-            if (!stopping && xray === x && active) {
+            if (!stopping && !x.stoppedIntentionally && xray === x && active) {
                 VpnState.log("Xray-core stopped unexpectedly (exit $code)")
                 reconnect("Proxy engine stopped")
             }
@@ -637,9 +638,15 @@ class ProxyVpnService : VpnService() {
 
     // ------------------------------------------------------------------ reconnect
 
+    @Volatile private var reconnectPending = false
+    @Volatile private var sessionStartedAt = 0L
+
     private fun reconnect(reason: String) {
+        // Coalesce: several triggers (watchdog, network change, health check) must not stack restarts.
+        if (reconnectPending) return
+        reconnectPending = true
         scope.launch {
-            lock.withLock {
+            try { lock.withLock {
                 if (stopping || !active) return@withLock
                 val p = profile ?: return@withLock
                 val ib = inbound ?: return@withLock
@@ -648,8 +655,10 @@ class ProxyVpnService : VpnService() {
                     attempt++
                     VpnState.setStatus { it.copy(state = ConnState.RECONNECTING, message = reason, reconnectAttempt = attempt) }
                     updateNotification(ConnState.RECONNECTING, reason)
-                    xray?.stop()
+                    // Detach first so the old process's watchdog can never treat this stop as a crash.
+                    val old = xray
                     xray = null
+                    old?.stop()
                     if (currentNetwork == null) {
                         VpnState.setStatus { it.copy(message = "Waiting for network…") }
                         sleepUnlessStopping(2000)
@@ -679,7 +688,7 @@ class ProxyVpnService : VpnService() {
                         sleepUnlessStopping(minOf(30_000L, 1000L shl minOf(attempt, 5)))
                     }
                 }
-            }
+            } } finally { reconnectPending = false }
         }
     }
 
@@ -702,7 +711,9 @@ class ProxyVpnService : VpnService() {
                 VpnState.log("Network available: ${networkType(network)}")
                 VpnState.setStatus { it.copy(networkType = networkType(network)) }
                 // Restart Xray so stale upstream connections from the old network are dropped.
-                if (active) reconnect(if (previous == null) "Network restored" else "Network changed")
+                // The first callback right after connecting just reports the current network.
+                if (active && System.currentTimeMillis() - sessionStartedAt > 5000)
+                    reconnect(if (previous == null) "Network restored" else "Network changed")
             }
 
             override fun onLost(network: Network) {
@@ -803,8 +814,9 @@ class ProxyVpnService : VpnService() {
             runCatching { TProxyService.TProxyStopService() }
             hevStarted = false
         }
-        xray?.stop()
+        val oldXray = xray
         xray = null
+        oldXray?.stop()
         ovpn?.stop()
         ovpn = null
         synchronized(availableNetworks) { availableNetworks.clear() }

@@ -63,7 +63,8 @@ object XrayConfigBuilder {
         val outbounds = JSONArray()
         outbounds.put(proxyOutbound(p))
         outbounds.put(JSONObject().put("tag", "direct").put("protocol", "freedom")
-            .put("settings", JSONObject().put("domainStrategy", if (s.ipv6Mode == Ipv6Mode.PROXY) "UseIP" else "UseIPv4")))
+            .put("streamSettings", JSONObject().put("sockopt",
+                JSONObject().put("domainStrategy", if (s.ipv6Mode == Ipv6Mode.PROXY) "UseIP" else "UseIPv4"))))
         outbounds.put(JSONObject().put("tag", "block").put("protocol", "blackhole"))
         outbounds.put(JSONObject().put("tag", "dns-out").put("protocol", "dns"))
         root.put("outbounds", outbounds)
