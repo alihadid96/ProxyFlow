@@ -191,6 +191,7 @@ private fun ProfileCard(
                 val detail = buildString {
                     append(p.displayServer())
                     if (p.protocol == Protocol.VLESS) append(" · ${p.transport.uppercase()} · ${p.security.uppercase()}")
+                    else if (p.protocol == Protocol.OPENVPN && p.authEnabled) append(" · login")
                     else if (p.hasAuth) append(" · auth")
                 }
                 Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -200,6 +201,8 @@ private fun ProfileCard(
                     when {
                         testing -> { CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp); Spacer(Modifier.width(6.dp)); Text("Testing…", style = MaterialTheme.typography.labelMedium) }
                         p.lastTestAt == 0L -> Text("Not tested", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        p.lastTestError == null && p.lastLatencyMs < 0 -> Text("Server resolved · tls-auth blocks UDP probes, connect to verify",
+                            style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
                         p.lastTestError != null -> Text(p.lastTestError, style = MaterialTheme.typography.labelMedium, color = ErrorRed, maxLines = 2, overflow = TextOverflow.Ellipsis)
                         else -> {
                             val c = when { p.lastLatencyMs < 300 -> Success; p.lastLatencyMs < 800 -> Warning; else -> ErrorRed }
@@ -228,10 +231,12 @@ private fun ProfileCard(
 @Composable
 fun ExportDialog(p: ProxyProfile, onDismiss: () -> Unit) {
     val context = LocalContext.current
-    val canStrip = p.protocol != Protocol.VLESS && p.hasAuth
+    val canStrip = p.hasAuth
+    val isOvpn = p.protocol == Protocol.OPENVPN
     var includeSecrets by remember { mutableStateOf(!canStrip) }
     val link = LinkCodec.export(p, includeSecrets)
-    val qr = remember(link) { QrCodes.encode(link, 640) }
+    // OpenVPN configs (several KB with certificates) are too large for a QR code.
+    val qr = remember(link) { if (isOvpn || link.length > 2000) null else runCatching { QrCodes.encode(link, 640) }.getOrNull() }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Export \"${p.name}\"") },
@@ -243,15 +248,20 @@ fun ExportDialog(p: ProxyProfile, onDismiss: () -> Unit) {
                         Switch(checked = includeSecrets, onCheckedChange = { includeSecrets = it })
                     }
                 }
-                if (includeSecrets && (p.protocol == Protocol.VLESS || p.hasAuth)) {
+                if (isOvpn) {
+                    WarningBox("The .ovpn configuration contains your certificates and private key. Anyone with it can connect as you. " +
+                        "Your saved username/password are NOT included.")
+                } else if (includeSecrets && (p.protocol == Protocol.VLESS || p.hasAuth)) {
                     WarningBox(
                         if (p.protocol == Protocol.VLESS) "This link contains the UUID, which grants access to the server. Share it only with people you trust."
                         else "This link contains your proxy password in readable form."
                     )
                 }
                 Spacer(Modifier.height(8.dp))
-                Box(Modifier.fillMaxWidth().background(Color.White, RoundedCornerShape(16.dp)).padding(12.dp), contentAlignment = Alignment.Center) {
-                    Image(qr.asImageBitmap(), "QR code", Modifier.size(220.dp))
+                if (qr != null) {
+                    Box(Modifier.fillMaxWidth().background(Color.White, RoundedCornerShape(16.dp)).padding(12.dp), contentAlignment = Alignment.Center) {
+                        Image(qr.asImageBitmap(), "QR code", Modifier.size(220.dp))
+                    }
                 }
             }
         },

@@ -21,6 +21,7 @@ import androidx.core.content.ContextCompat
 import com.proxyflow.app.ProxyFlowApp
 import com.proxyflow.app.R
 import com.proxyflow.app.core.LocalInbound
+import com.proxyflow.app.core.OvpnConfig
 import com.proxyflow.app.core.ProfileValidator
 import com.proxyflow.app.core.ProxyTester
 import com.proxyflow.app.core.XrayConfigBuilder
@@ -28,7 +29,15 @@ import com.proxyflow.app.core.XrayProcess
 import com.proxyflow.app.data.AppSettings
 import com.proxyflow.app.data.Ipv6Mode
 import com.proxyflow.app.data.PerAppMode
+import com.proxyflow.app.data.Protocol
 import com.proxyflow.app.data.ProxyProfile
+import com.proxyflow.app.core.Tunnel
+import com.proxyflow.app.core.openTcp
+import android.net.IpPrefix
+import android.net.NetworkRequest
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.Socket
 import com.proxyflow.app.ui.MainActivity
 import com.proxyflow.app.ui.formatBytes
 import com.proxyflow.app.ui.formatSpeed
@@ -101,6 +110,16 @@ class ProxyVpnService : VpnService() {
     @Volatile private var currentNetwork: Network? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
+    // OpenVPN session state
+    private var ovpn: OpenVpnEngine? = null
+    @Volatile private var ovpnEverConnected = false
+    @Volatile private var ovpnFatal: String? = null
+    private var ovpnAttempt = 0
+    private var ovLastIn = 0L; private var ovLastOut = 0L; private var ovBaseIn = 0L; private var ovBaseOut = 0L
+    private var ovLastT = 0L
+    private val availableNetworks = mutableSetOf<Network>()
+    private val isOvpn get() = profile?.protocol == Protocol.OPENVPN
+
     private var unsavedDown = 0L
     private var unsavedUp = 0L
 
@@ -145,7 +164,8 @@ class ProxyVpnService : VpnService() {
             profile = p
             VpnState.clearLogs()
             VpnState.setStatus {
-                ConnectionStatus(ConnState.CONNECTING, p.id, p.name, p.protocol, p.displayServer(), message = "Starting Xray-core…")
+                ConnectionStatus(ConnState.CONNECTING, p.id, p.name, p.protocol, p.displayServer(),
+                    message = if (p.protocol == Protocol.OPENVPN) "Starting OpenVPN…" else "Starting Xray-core…")
             }
             VpnState.setTraffic(TrafficStats())
             VpnState.setMeasure { Measurements() }
@@ -153,6 +173,10 @@ class ProxyVpnService : VpnService() {
 
             ProfileValidator.validate(p).takeIf { it.isNotEmpty() }?.let { throw IllegalArgumentException(it.first()) }
             if (prepare(this) != null) throw IllegalStateException("VPN permission has not been granted — open ProxyFlow and connect once")
+            if (p.protocol == Protocol.OPENVPN) {
+                startOpenVpn(p)
+                return@withLock
+            }
             TProxyService.loadError?.let { throw IllegalStateException("Tunnel library failed to load: ${it.message}") }
 
             val ib = XrayProcess.newInbound()
@@ -184,6 +208,223 @@ class ProxyVpnService : VpnService() {
             stopSelf()
         }
     }
+
+    // ------------------------------------------------------------------ OpenVPN
+
+    private fun startOpenVpn(p: ProxyProfile) {
+        val cm = getSystemService(ConnectivityManager::class.java)
+        currentNetwork = cm.activeNetwork // physical network: the VPN is not up yet
+        ovpnEverConnected = false
+        ovpnFatal = null
+        ovpnAttempt = 0
+        ovLastIn = 0; ovLastOut = 0; ovBaseIn = 0; ovBaseOut = 0; ovLastT = System.nanoTime()
+        launchOvpnEngine(p)
+        active = true
+        VpnState.log("Starting OpenVPN for ${p.displayServer()}")
+        registerNetworkCallback()
+        startSessionJobs()
+        val limitSec = maxOf(45, settings.connectTimeoutSec * 4)
+        sessionJobs += scope.launch {
+            delay(limitSec * 1000L)
+            if (active && !ovpnEverConnected && !stopping) {
+                val last = VpnState.status.value.message ?: "no response"
+                lock.withLock { failSession("Could not connect to the OpenVPN server within ${limitSec}s ($last)") }
+            }
+        }
+    }
+
+    private fun launchOvpnEngine(p: ProxyProfile) {
+        val engine = OpenVpnEngine(this, p, ovpnListener)
+        ovpn = engine
+        engine.start(currentNetwork)
+    }
+
+    private fun friendlyOvpnState(name: String) = when (name) {
+        "CONNECTING" -> "Connecting to server…"
+        "RESOLVE" -> "Resolving server address…"
+        "TCP_CONNECT" -> "Opening TCP connection…"
+        "WAIT" -> "Waiting for server reply…"
+        "AUTH" -> "Authenticating…"
+        "AUTH_PENDING" -> "Waiting for authentication…"
+        "GET_CONFIG" -> "Downloading configuration…"
+        "ASSIGN_IP" -> "Assigning IP address…"
+        "ADD_ROUTES" -> "Adding routes…"
+        else -> name.lowercase().replaceFirstChar { it.uppercase() }
+    }
+
+    private val ovpnListener = object : OpenVpnEngine.Listener {
+        override fun onState(name: String, detail: String, localIp: String, remoteIp: String) {
+            if (stopping) return
+            val p = profile ?: return
+            when (name) {
+                "CONNECTED" -> {
+                    val first = !ovpnEverConnected
+                    ovpnEverConnected = true
+                    ovpnAttempt = 0
+                    VpnState.setStatus {
+                        it.copy(state = ConnState.CONNECTED, message = null, reconnectAttempt = 0,
+                            connectedAt = if (it.connectedAt > 0) it.connectedAt else System.currentTimeMillis(),
+                            networkType = networkType(currentNetwork))
+                    }
+                    VpnState.log("OpenVPN connected · tunnel IP $localIp · server $remoteIp")
+                    updateNotification(ConnState.CONNECTED, p.name)
+                    if (first) eventNotification("Connected", "${p.name} · OpenVPN")
+                    scope.launch { delay(800); runMeasurements() }
+                }
+                "RECONNECTING" -> {
+                    VpnState.setStatus { it.copy(state = ConnState.RECONNECTING, message = "Reconnecting ($detail)") }
+                    updateNotification(ConnState.RECONNECTING, "Reconnecting…")
+                }
+                "EXITING" -> Unit
+                else -> {
+                    val msg = friendlyOvpnState(name)
+                    VpnState.setStatus {
+                        it.copy(state = if (ovpnEverConnected) ConnState.RECONNECTING else ConnState.CONNECTING, message = msg)
+                    }
+                }
+            }
+        }
+
+        override fun onBytes(inBytes: Long, outBytes: Long) {
+            if (inBytes < ovLastIn || outBytes < ovLastOut) { // OpenVPN restarted: counters reset
+                ovBaseIn += ovLastIn; ovBaseOut += ovLastOut; ovLastIn = 0; ovLastOut = 0
+            }
+            val now = System.nanoTime()
+            val dt = ((now - ovLastT) / 1e9).coerceAtLeast(0.5)
+            val dIn = inBytes - ovLastIn
+            val dOut = outBytes - ovLastOut
+            ovLastIn = inBytes; ovLastOut = outBytes; ovLastT = now
+            unsavedDown += dIn; unsavedUp += dOut
+            VpnState.setTraffic(TrafficStats(ovBaseOut + outBytes, ovBaseIn + inBytes, (dOut / dt).toLong(), (dIn / dt).toLong()))
+        }
+
+        override fun onLog(line: String) = VpnState.log(line)
+
+        override fun onFatal(message: String) {
+            ovpnFatal = message
+            VpnState.log("Error: $message")
+        }
+
+        override fun onExit(code: Int) {
+            scope.launch { handleOvpnExit(code) }
+        }
+
+        override fun buildTun(cfg: TunConfig): ParcelFileDescriptor? = establishOvpnTun(cfg)
+    }
+
+    private suspend fun handleOvpnExit(code: Int) = lock.withLock {
+        if (stopping || !active || !isOvpn) return@withLock
+        val engine = ovpn
+        val lastError = engine?.lastLogLines()?.lastOrNull {
+            it.contains("error", true) || it.contains("fatal", true) || it.contains("failed", true)
+        }
+        val msg = ovpnFatal ?: lastError ?: "OpenVPN stopped (exit code $code)"
+        if (ovpnFatal != null || !ovpnEverConnected || !settings.autoReconnect) {
+            failSession(msg); return@withLock
+        }
+        val p = profile ?: return@withLock
+        while (!stopping) {
+            ovpnAttempt++
+            if (!settings.killSwitch && ovpnAttempt > 5) { failSession("Connection lost: $msg"); return@withLock }
+            VpnState.setStatus { it.copy(state = ConnState.RECONNECTING, message = "OpenVPN restarting…", reconnectAttempt = ovpnAttempt) }
+            updateNotification(ConnState.RECONNECTING, "Restarting OpenVPN…")
+            // Kill switch: the TUN interface stays up while OpenVPN restarts, so nothing leaks.
+            sleepUnlessStopping(minOf(30_000L, 1000L shl minOf(ovpnAttempt, 5)))
+            if (stopping) return@withLock
+            try {
+                ovpn?.stop()
+                ovpnFatal = null
+                launchOvpnEngine(p)
+                VpnState.log("OpenVPN restarted (attempt $ovpnAttempt)")
+                return@withLock
+            } catch (e: Exception) {
+                VpnState.log("OpenVPN restart failed: ${ProxyTester.friendly(e)}")
+            }
+        }
+    }
+
+    /** Must be called with [lock] held. */
+    private fun failSession(msg: String) {
+        VpnState.log("Connection failed: $msg")
+        teardown(keepForeground = false)
+        VpnState.setStatus { it.copy(state = ConnState.ERROR, message = msg) }
+        eventNotification("Connection failed", msg)
+        stopSelf()
+    }
+
+    private val lanRanges = listOf("10.0.0.0" to 8, "172.16.0.0" to 12, "192.168.0.0" to 16, "169.254.0.0" to 16)
+
+    /** Builds the TUN interface with the settings OpenVPN received from the server. */
+    private fun establishOvpnTun(cfg: TunConfig): ParcelFileDescriptor? {
+        val p = profile ?: return null
+        val s = settings
+        val v4 = cfg.ipv4 ?: run { VpnState.log("Server did not assign an IPv4 address"); return null }
+        val b = Builder()
+            .setSession("ProxyFlow · ${p.name}")
+            .setMtu(cfg.mtu.coerceIn(1280, 9000))
+            .addAddress(v4, cfg.prefix4)
+        if (p.ovpnFullTunnel) b.addRoute("0.0.0.0", 0)
+        else cfg.routes.forEach { (net, prefix) -> runCatching { b.addRoute(net, prefix) } }
+
+        val useV6 = cfg.ipv6 != null && s.ipv6Mode != Ipv6Mode.BLOCK
+        if (useV6) {
+            b.addAddress(cfg.ipv6!!, cfg.prefix6)
+            if (p.ovpnFullTunnel) b.addRoute("::", 0) else cfg.routes6.forEach { (n, pre) -> runCatching { b.addRoute(n, pre) } }
+        } else if (s.ipv6Mode != Ipv6Mode.BYPASS) {
+            // No IPv6 from the server (or IPv6 blocked): capture IPv6 anyway so it cannot leak.
+            b.addAddress(TUN_IPV6, 126)
+            b.addRoute("::", 0)
+        }
+        val dns = cfg.dns.ifEmpty { listOf(s.dnsIp()) }
+        dns.forEach { runCatching { b.addDnsServer(it) }.onFailure { _ -> VpnState.log("Ignoring invalid DNS server $it") } }
+        cfg.domains.forEach { runCatching { b.addSearchDomain(it) } }
+
+        if (Build.VERSION.SDK_INT >= 33) {
+            cfg.excludedRoutes.forEach { (n, pre) -> runCatching { b.excludeRoute(IpPrefix(InetAddress.getByName(n), pre)) } }
+            if (s.bypassLan && p.ovpnFullTunnel) {
+                val v4net = OvpnConfig.networkAddress(v4, cfg.prefix4)
+                lanRanges.filter { (net, pre) ->
+                    !OvpnConfig.overlaps(net, pre, v4net, cfg.prefix4) &&
+                        dns.none { OvpnConfig.cidrContains(net, pre, it) } &&
+                        cfg.routes.none { (rn, rp) -> rp > 0 && OvpnConfig.overlaps(net, pre, rn, rp) }
+                }.forEach { (net, pre) -> runCatching { b.excludeRoute(IpPrefix(InetAddress.getByName(net), pre)) } }
+            }
+        } else if (s.bypassLan) {
+            VpnState.log("LAN bypass with OpenVPN needs Android 13+; local network traffic uses the tunnel")
+        }
+
+        // Per-app routing. ProxyFlow itself stays inside the VPN (its OpenVPN socket is protected),
+        // so latency and exit-IP measurements travel through the tunnel.
+        val pm = packageManager
+        fun installed(pkg: String) = runCatching { pm.getApplicationInfo(pkg, 0); true }.getOrDefault(false)
+        val selected = s.selectedApps.filter { it != packageName && installed(it) }
+        when {
+            s.perAppMode == PerAppMode.ONLY_SELECTED && selected.isNotEmpty() -> {
+                selected.forEach { b.addAllowedApplication(it) }
+                b.addAllowedApplication(packageName)
+            }
+            s.perAppMode == PerAppMode.BYPASS_SELECTED -> selected.forEach { b.addDisallowedApplication(it) }
+            else -> Unit
+        }
+        b.setMetered(false)
+        currentNetwork?.let { b.setUnderlyingNetworks(arrayOf(it)) }
+        b.setConfigureIntent(PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE))
+        val pfd = b.establish() ?: return null
+        val old = tun
+        tun = pfd
+        runCatching { old?.close() }
+        VpnState.log("VPN interface up: $v4/${cfg.prefix4}, MTU ${cfg.mtu}, DNS ${dns.joinToString()}")
+        return pfd
+    }
+
+    private fun protectedTcpPing(host: String, port: Int, timeoutMs: Int = 3000): Int = try {
+        Socket().use { s ->
+            protect(s)
+            val start = System.nanoTime()
+            s.connect(InetSocketAddress(host, port), timeoutMs)
+            ((System.nanoTime() - start) / 1_000_000).toInt()
+        }
+    } catch (_: Exception) { -1 }
 
     private fun startXray(p: ProxyProfile, ib: LocalInbound) {
         val x = XrayProcess(this, p.secretValues() + ib.pass) { VpnState.log(it) }
@@ -278,7 +519,7 @@ class ProxyVpnService : VpnService() {
             var lastDown = 0L
             var tick = 0
             while (isActive) {
-                val st = runCatching { TProxyService.TProxyGetStats() }.getOrNull()
+                val st = if (isOvpn) null else runCatching { TProxyService.TProxyGetStats() }.getOrNull()
                 if (st != null && st.size >= 4) {
                     val up = st[1]
                     val down = st[3]
@@ -305,6 +546,12 @@ class ProxyVpnService : VpnService() {
             while (isActive) {
                 delay(30_000)
                 if (VpnState.status.value.state != ConnState.CONNECTED) continue
+                if (isOvpn) {
+                    val t = measurementTunnel() ?: continue
+                    runCatching { ProxyTester.urlTest(t, settings.connectTimeoutSec * 1000) }
+                        .onSuccess { ms -> VpnState.setMeasure { it.copy(urlLatencyMs = ms, measuredAt = System.currentTimeMillis()) } }
+                    continue
+                }
                 val ib = inbound ?: continue
                 val ok = runCatching {
                     val ms = ProxyTester.urlTest(ProxyTester.localTunnel(ib), settings.connectTimeoutSec * 1000)
@@ -320,17 +567,26 @@ class ProxyVpnService : VpnService() {
         }
     }
 
+    /** How the app reaches the Internet "through the proxy" for its own measurements. */
+    private fun measurementTunnel(): Tunnel? =
+        if (isOvpn) Tunnel { h, port, t -> openTcp(h, port, t) } // the app itself is routed through the OpenVPN tunnel
+        else inbound?.let { ProxyTester.localTunnel(it) }
+
     private suspend fun runMeasurements() {
-        val ib = inbound ?: return
+        val tunnel = measurementTunnel() ?: return
         val p = profile ?: return
         VpnState.setMeasure { it.copy(measuring = true) }
         val timeout = settings.connectTimeoutSec * 1000
-        val rtt = ProxyTester.tcpPing(p.host.trim(), p.port)
-        val latency = runCatching { ProxyTester.urlTest(ProxyTester.localTunnel(ib), timeout) }
+        val rtt = when {
+            !isOvpn -> ProxyTester.tcpPing(p.host.trim(), p.port)
+            p.ovpnProto.startsWith("tcp") -> protectedTcpPing(p.host.trim(), p.port)
+            else -> -1 // UDP servers cannot be pinged with TCP
+        }
+        val latency = runCatching { ProxyTester.urlTest(tunnel, timeout) }
         var exit = VpnState.measure.value.exit
         var exitErr: String? = null
         if (settings.lookupExitIp) {
-            runCatching { ProxyTester.exitInfo(ProxyTester.localTunnel(ib), timeout) }
+            runCatching { ProxyTester.exitInfo(tunnel, timeout) }
                 .onSuccess { exit = it }
                 .onFailure { exitErr = ProxyTester.friendly(it) }
         }
@@ -406,6 +662,7 @@ class ProxyVpnService : VpnService() {
     }
 
     private fun registerNetworkCallback() {
+        if (isOvpn) { registerPhysicalNetworkCallback(); return }
         val cm = getSystemService(ConnectivityManager::class.java)
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
@@ -431,6 +688,48 @@ class ProxyVpnService : VpnService() {
             }
         }
         runCatching { cm.registerDefaultNetworkCallback(cb) }.onSuccess { networkCallback = cb }
+    }
+
+    /**
+     * OpenVPN mode: this app is inside the VPN, so the "default network" would be the VPN itself.
+     * Track physical (non-VPN) networks instead and tell OpenVPN when the active one changes.
+     */
+    private fun registerPhysicalNetworkCallback() {
+        val cm = getSystemService(ConnectivityManager::class.java)
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+            .build()
+        val cb = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                synchronized(availableNetworks) { availableNetworks += network }
+                val cur = currentNetwork
+                val isWifi = cm.getNetworkCapabilities(network)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+                val curIsWifi = cur != null && cm.getNetworkCapabilities(cur)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+                if (cur == null || (isWifi && !curIsWifi && cur != network)) switchNetwork(network)
+            }
+
+            override fun onLost(network: Network) {
+                val next = synchronized(availableNetworks) { availableNetworks -= network; availableNetworks.firstOrNull() }
+                if (network == currentNetwork) switchNetwork(next)
+            }
+        }
+        runCatching { cm.registerNetworkCallback(request, cb) }.onSuccess { networkCallback = cb }
+    }
+
+    private fun switchNetwork(network: Network?) {
+        if (network == currentNetwork) return
+        currentNetwork = network
+        if (network == null) {
+            setUnderlyingNetworks(null)
+            VpnState.log("Network lost")
+            if (active && !stopping) VpnState.setStatus { it.copy(state = ConnState.RECONNECTING, message = "Waiting for network…") }
+            return
+        }
+        setUnderlyingNetworks(arrayOf(network))
+        VpnState.log("Network: ${networkType(network)}")
+        VpnState.setStatus { it.copy(networkType = networkType(network)) }
+        if (active && !stopping) ovpn?.networkChange()
     }
 
     private fun networkType(network: Network?): String {
@@ -477,6 +776,9 @@ class ProxyVpnService : VpnService() {
         }
         xray?.stop()
         xray = null
+        ovpn?.stop()
+        ovpn = null
+        synchronized(availableNetworks) { availableNetworks.clear() }
         runCatching { tun?.close() }
         tun = null
         inbound = null

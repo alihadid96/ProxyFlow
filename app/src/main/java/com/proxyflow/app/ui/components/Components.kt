@@ -125,6 +125,7 @@ fun ProtocolBadge(protocol: Protocol, modifier: Modifier = Modifier) {
         Protocol.HTTP -> Color(0xFF8B5CF6)
         Protocol.SOCKS5 -> Cyan
         Protocol.VLESS -> DeepBlue
+        Protocol.OPENVPN -> Color(0xFFF97316)
     }
     Box(
         modifier.background(color.copy(alpha = 0.16f), RoundedCornerShape(8.dp)).padding(horizontal = 8.dp, vertical = 3.dp)

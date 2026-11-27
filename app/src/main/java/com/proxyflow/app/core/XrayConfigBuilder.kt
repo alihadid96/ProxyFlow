@@ -100,6 +100,7 @@ object XrayConfigBuilder {
                 if (p.hasAuth) st.put("user", p.username).put("pass", p.password)
                 o.put("protocol", "socks").put("settings", st)
             }
+            Protocol.OPENVPN -> throw IllegalArgumentException("OpenVPN profiles do not use Xray-core")
             Protocol.VLESS -> {
                 val st = JSONObject()
                     .put("address", p.host.trim())

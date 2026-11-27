@@ -3,7 +3,7 @@ package com.proxyflow.app.data
 import org.json.JSONObject
 
 enum class Protocol(val label: String) {
-    HTTP("HTTP"), SOCKS5("SOCKS5"), VLESS("VLESS");
+    HTTP("HTTP"), SOCKS5("SOCKS5"), VLESS("VLESS"), OPENVPN("OpenVPN");
 
     companion object {
         fun from(value: String?): Protocol = entries.firstOrNull { it.name.equals(value, true) } ?: HTTP
@@ -70,12 +70,17 @@ data class ProxyProfile(
     val serviceName: String = "",
     val grpcMultiMode: Boolean = false,
     val xhttpMode: String = "auto",
+    // OpenVPN
+    val ovpnConfig: String = "",
+    val keyPassword: String = "",
+    val ovpnProto: String = "udp",
+    val ovpnFullTunnel: Boolean = true,
     // test results (not part of the configuration)
     val lastLatencyMs: Int = -1,
     val lastTestError: String? = null,
     val lastTestAt: Long = 0,
 ) {
-    val hasAuth get() = protocol != Protocol.VLESS && authEnabled && username.isNotEmpty()
+    val hasAuth get() = (protocol == Protocol.HTTP || protocol == Protocol.SOCKS5) && authEnabled && username.isNotEmpty()
 
     /** Non-secret fields as JSON (stored in plaintext). */
     fun publicJson(): String = JSONObject().apply {
@@ -99,6 +104,8 @@ data class ProxyProfile(
         put("serviceName", serviceName)
         put("grpcMultiMode", grpcMultiMode)
         put("xhttpMode", xhttpMode)
+        put("ovpnProto", ovpnProto)
+        put("ovpnFullTunnel", ovpnFullTunnel)
     }.toString()
 
     /** Secret fields as JSON (encrypted before storage). */
@@ -106,6 +113,8 @@ data class ProxyProfile(
         put("username", username)
         put("password", password)
         put("uuid", uuid)
+        put("ovpnConfig", ovpnConfig)
+        put("keyPassword", keyPassword)
     }.toString()
 
     fun withPublicJson(json: String): ProxyProfile {
@@ -131,6 +140,8 @@ data class ProxyProfile(
             serviceName = o.optString("serviceName", ""),
             grpcMultiMode = o.optBoolean("grpcMultiMode", false),
             xhttpMode = o.optString("xhttpMode", "auto"),
+            ovpnProto = o.optString("ovpnProto", "udp"),
+            ovpnFullTunnel = o.optBoolean("ovpnFullTunnel", true),
         )
     }
 
@@ -140,11 +151,14 @@ data class ProxyProfile(
             username = o.optString("username", ""),
             password = o.optString("password", ""),
             uuid = o.optString("uuid", ""),
+            ovpnConfig = o.optString("ovpnConfig", ""),
+            keyPassword = o.optString("keyPassword", ""),
         )
     }
 
     /** Strings that must never appear in logs. */
-    fun secretValues(): List<String> = listOf(username, password, uuid).filter { it.length >= 3 }
+    fun secretValues(): List<String> = listOf(username, password, uuid, keyPassword).filter { it.length >= 3 }
 
-    fun displayServer(): String = if (host.contains(':')) "[$host]:$port" else "$host:$port"
+    fun displayServer(): String = (if (host.contains(':')) "[$host]:$port" else "$host:$port") +
+        (if (protocol == Protocol.OPENVPN) " · ${ovpnProto.uppercase()}" else "")
 }

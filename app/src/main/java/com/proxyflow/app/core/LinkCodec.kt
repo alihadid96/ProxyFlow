@@ -138,6 +138,7 @@ object LinkCodec {
                 val dns = if (p.dnsMode == DnsMode.LOCAL) "?dns=local" else ""
                 "$scheme://$auth$hp$dns#$name"
             }
+            Protocol.OPENVPN -> p.ovpnConfig
             Protocol.VLESS -> {
                 val q = linkedMapOf<String, String>()
                 q["encryption"] = p.encryption.ifEmpty { "none" }
@@ -256,14 +257,22 @@ object ProfileValidator {
     fun validate(p: ProxyProfile): List<String> {
         val e = mutableListOf<String>()
         if (p.name.isBlank()) e += "Profile name is required"
-        if (!AddressUtil.isValidHost(p.host.trim())) e += "Server address is not a valid host name or IP"
-        if (p.port !in 1..65535) e += "Port must be between 1 and 65535"
+        if (p.protocol != Protocol.OPENVPN) {
+            if (!AddressUtil.isValidHost(p.host.trim())) e += "Server address is not a valid host name or IP"
+            if (p.port !in 1..65535) e += "Port must be between 1 and 65535"
+        }
         if (p.timeoutSec != 0 && p.timeoutSec !in 3..120) e += "Timeout must be 3–120 seconds"
         when (p.protocol) {
             Protocol.HTTP, Protocol.SOCKS5 -> {
                 if (p.authEnabled && p.username.isEmpty()) e += "Username is required when authentication is enabled"
                 if (p.protocol == Protocol.SOCKS5 && (p.username.toByteArray().size > 255 || p.password.toByteArray().size > 255))
                     e += "SOCKS5 username/password must be at most 255 bytes"
+            }
+            Protocol.OPENVPN -> {
+                val parsed = OvpnConfig.parse(p.ovpnConfig)
+                if (p.ovpnConfig.isBlank()) e += "OpenVPN configuration is empty"
+                else e += parsed.errors
+                if (parsed.needsUserPass && p.username.isEmpty()) e += "This server requires a username and password"
             }
             Protocol.VLESS -> {
                 if (p.uuid.isBlank()) e += "UUID is required"

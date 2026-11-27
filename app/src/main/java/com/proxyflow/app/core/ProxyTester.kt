@@ -42,7 +42,7 @@ object ProxyTester {
         when (p.protocol) {
             Protocol.HTTP -> HttpConnectClient.connect(p.host.trim(), p.port, user, pass, target, port, timeout)
             Protocol.SOCKS5 -> Socks5Client.connect(p.host.trim(), p.port, user, pass, target, port, timeout)
-            Protocol.VLESS -> throw IllegalStateException("VLESS requires Xray-core")
+            Protocol.VLESS, Protocol.OPENVPN -> throw IllegalStateException("${p.protocol.label} cannot be used as a plain tunnel")
         }
     }
 
@@ -66,6 +66,7 @@ object ProxyTester {
         return try {
             when (p.protocol) {
                 Protocol.HTTP, Protocol.SOCKS5 -> TestResult(urlTest(directTunnel(p), timeoutMs), null)
+                Protocol.OPENVPN -> OpenVpnProbe.test(p, timeoutMs)
                 Protocol.VLESS -> {
                     val inbound = XrayProcess.newInbound()
                     val xray = XrayProcess(context, p.secretValues() + inbound.pass) {}

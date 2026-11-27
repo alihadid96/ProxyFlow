@@ -52,6 +52,13 @@ import androidx.compose.ui.unit.dp
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import com.proxyflow.app.core.LinkCodec
+import com.proxyflow.app.core.OvpnConfig
+import com.proxyflow.app.ui.readTextDocument
+import com.proxyflow.app.ui.theme.MonoStyle
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.material.icons.filled.FileOpen
+import androidx.compose.material.icons.filled.VpnKey
 import com.proxyflow.app.core.ProfileValidator
 import com.proxyflow.app.data.DnsMode
 import com.proxyflow.app.data.FINGERPRINTS
@@ -88,6 +95,29 @@ fun EditorScreen(vm: MainViewModel, profileId: Long?, onDone: () -> Unit) {
     var timeoutText by remember { mutableStateOf("") }
     var errors by remember { mutableStateOf<List<String>>(emptyList()) }
     var importMsg by remember { mutableStateOf<String?>(null) }
+
+    fun applyOvpn(name: String, text: String) {
+        val parsed = OvpnConfig.parse(text)
+        val r = parsed.firstRemote
+        p = p.copy(
+            protocol = Protocol.OPENVPN, ovpnConfig = text,
+            name = if (p.name.isBlank() || profileId == null) name else p.name,
+            host = r?.host ?: "", port = r?.port ?: 1194, ovpnProto = r?.proto ?: "udp",
+            authEnabled = parsed.needsUserPass,
+        )
+        portText = (r?.port ?: 1194).toString()
+        importMsg = if (parsed.errors.isEmpty()) "Loaded ${parsed.remotes.size} server(s) from \"$name\"" else parsed.errors.first()
+    }
+
+    val ovpnPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) runCatching { readTextDocument(context, uri) }
+            .onSuccess { (n, t) -> applyOvpn(n, t) }
+            .onFailure { importMsg = it.message }
+    }
+
+    LaunchedEffect(Unit) {
+        if (profileId == null) vm.consumePendingOvpn()?.let { (n, t) -> applyOvpn(n, t) }
+    }
 
     LaunchedEffect(profileId) {
         if (profileId != null) {
@@ -128,6 +158,16 @@ fun EditorScreen(vm: MainViewModel, profileId: Long?, onDone: () -> Unit) {
                     // Quick import
                     GlassCard {
                         Text("Quick fill", style = MaterialTheme.typography.titleMedium)
+                        if (p.protocol == Protocol.OPENVPN) {
+                            Text("Load your server's .ovpn configuration file.", style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Spacer(Modifier.height(10.dp))
+                            Button(onClick = { ovpnPicker.launch(arrayOf("*/*")) }, modifier = Modifier.fillMaxWidth()) {
+                                Icon(Icons.Filled.FileOpen, null); Spacer(Modifier.width(8.dp)); Text("Open .ovpn file")
+                            }
+                            importMsg?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 6.dp)) }
+                            return@GlassCard
+                        }
                         Text("Paste or scan a vless://, socks5:// or http:// link to fill every field automatically.",
                             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(Modifier.height(10.dp))
@@ -146,14 +186,15 @@ fun EditorScreen(vm: MainViewModel, profileId: Long?, onDone: () -> Unit) {
                     SectionTitle("Protocol")
                     SegmentedChoice(Protocol.entries.toList(), p.protocol, { it.label }, { proto ->
                         p = p.copy(protocol = proto)
-                        if (portText.isBlank() || portText == "8080" || portText == "1080" || portText == "443") {
-                            portText = when (proto) { Protocol.HTTP -> "8080"; Protocol.SOCKS5 -> "1080"; Protocol.VLESS -> "443" }
+                        if (portText.isBlank() || portText == "8080" || portText == "1080" || portText == "443" || portText == "1194") {
+                            portText = when (proto) { Protocol.HTTP -> "8080"; Protocol.SOCKS5 -> "1080"; Protocol.VLESS -> "443"; Protocol.OPENVPN -> "1194" }
                         }
                     })
 
-                    SectionTitle("Server")
+                    SectionTitle(if (p.protocol == Protocol.OPENVPN) "Profile" else "Server")
                     GlassCard {
                         AppTextField(p.name, { p = p.copy(name = it) }, "Profile name", leading = Icons.Filled.Label, placeholder = "My proxy")
+                        if (p.protocol == Protocol.OPENVPN) return@GlassCard
                         AppTextField(p.host, { p = p.copy(host = it.trim()) }, "Server address / host", leading = Icons.Filled.Dns,
                             placeholder = "proxy.example.com or 203.0.113.10", keyboardType = KeyboardType.Uri)
                         AppTextField(portText, { portText = it.filter(Char::isDigit).take(5) }, "Port", leading = Icons.Filled.Tag,
@@ -163,6 +204,7 @@ fun EditorScreen(vm: MainViewModel, profileId: Long?, onDone: () -> Unit) {
                     when (p.protocol) {
                         Protocol.HTTP, Protocol.SOCKS5 -> HttpSocksFields(p, timeoutText, { timeoutText = it }) { p = it }
                         Protocol.VLESS -> VlessFields(p) { p = it }
+                        Protocol.OPENVPN -> OpenVpnFields(p) { p = it }
                     }
 
                     if (errors.isNotEmpty()) {
@@ -172,11 +214,18 @@ fun EditorScreen(vm: MainViewModel, profileId: Long?, onDone: () -> Unit) {
                     Spacer(Modifier.height(16.dp))
                     Button(
                         onClick = {
-                            val candidate = p.copy(
+                            var candidate = p.copy(
                                 port = portText.toIntOrNull() ?: 0,
                                 timeoutSec = timeoutText.toIntOrNull() ?: 0,
                                 name = p.name.ifBlank { "${p.protocol.label} ${p.host}" },
                             )
+                            if (candidate.protocol == Protocol.OPENVPN) {
+                                val parsed = OvpnConfig.parse(candidate.ovpnConfig)
+                                val r = parsed.firstRemote
+                                candidate = candidate.copy(host = r?.host ?: "", port = r?.port ?: 1194, ovpnProto = r?.proto ?: "udp",
+                                    authEnabled = parsed.needsUserPass, timeoutSec = 0,
+                                    name = p.name.ifBlank { "OpenVPN ${r?.host ?: ""}".trim() })
+                            }
                             val problems = ProfileValidator.validate(candidate)
                             errors = problems
                             if (problems.isEmpty()) vm.save(candidate) { onDone() }
@@ -285,3 +334,55 @@ private fun VlessFields(p: ProxyProfile, update: (ProxyProfile) -> Unit) {
 
 @Suppress("unused")
 private val keyboardNumber = KeyboardOptions(keyboardType = KeyboardType.Number)
+
+
+@Composable
+private fun OpenVpnFields(p: ProxyProfile, update: (ProxyProfile) -> Unit) {
+    val parsed = remember(p.ovpnConfig) { OvpnConfig.parse(p.ovpnConfig) }
+    SectionTitle("OpenVPN configuration")
+    GlassCard {
+        if (p.ovpnConfig.isNotBlank()) {
+            parsed.remotes.take(3).forEach { r ->
+                Text("Server  ${r.host}:${r.port} · ${r.proto.uppercase()}", style = MaterialTheme.typography.bodyMedium)
+            }
+            if (parsed.remotes.size > 3) Text("+${parsed.remotes.size - 3} more servers", style = MaterialTheme.typography.bodySmall)
+            Text(
+                buildString {
+                    append(if (parsed.needsUserPass) "Username/password login" else "Certificate login")
+                    if (parsed.hasTlsAuthOrCrypt) append(" · tls-auth/tls-crypt")
+                    if (parsed.keyEncrypted) append(" · encrypted private key")
+                },
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            parsed.errors.forEach { WarningBox(it, color = ErrorRed) }
+            parsed.warnings.forEach { WarningBox(it) }
+        }
+        AppTextField(
+            p.ovpnConfig, { update(p.copy(ovpnConfig = it)) }, "Configuration (.ovpn content)", singleLine = false,
+            modifier = Modifier.heightIn(min = 120.dp, max = 260.dp), placeholder = "client\ndev tun\nremote vpn.example.com 1194\n<ca>…</ca>",
+        )
+        Text("The whole configuration, including keys, is stored encrypted with the Android Keystore.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+    if (parsed.needsUserPass || p.username.isNotEmpty()) {
+        SectionTitle("Login")
+        GlassCard {
+            AppTextField(p.username, { update(p.copy(username = it)) }, "Username", leading = Icons.Filled.Person)
+            AppTextField(p.password, { update(p.copy(password = it)) }, "Password", leading = Icons.Filled.Lock, password = true)
+        }
+    }
+    if (parsed.keyEncrypted || p.keyPassword.isNotEmpty()) {
+        SectionTitle("Private key")
+        GlassCard {
+            AppTextField(p.keyPassword, { update(p.copy(keyPassword = it)) }, "Private key password", leading = Icons.Filled.VpnKey, password = true)
+        }
+    }
+    SectionTitle("Routing")
+    GlassCard {
+        SwitchRow("Send all traffic through the VPN", p.ovpnFullTunnel, { update(p.copy(ovpnFullTunnel = it)) },
+            subtitle = if (p.ovpnFullTunnel) "Ignores split-tunnel routes from the server — recommended, no leaks"
+            else "Only the routes pushed by the server use the VPN")
+        Text("OpenVPN carries TCP and UDP. DNS servers pushed by the server are used; otherwise the DNS server from Settings.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}

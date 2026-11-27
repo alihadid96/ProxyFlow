@@ -80,6 +80,8 @@ fun DetailsScreen(vm: MainViewModel, onBack: () -> Unit) {
                     GlassCard {
                         InfoRow("Download speed", formatSpeed(traffic.downloadSpeed))
                         InfoRow("Upload speed", formatSpeed(traffic.uploadSpeed))
+                        if (profile?.protocol == Protocol.OPENVPN) Text("OpenVPN reports bytes on the encrypted link (includes protocol overhead).",
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         InfoRow("Downloaded this session", formatBytes(traffic.downloadBytes))
                         InfoRow("Uploaded this session", formatBytes(traffic.uploadBytes))
                         InfoRow("Downloaded (all time)", formatBytes(settings.lifetimeDownload + 0))
@@ -101,7 +103,8 @@ fun DetailsScreen(vm: MainViewModel, onBack: () -> Unit) {
                     }
                     SectionTitle("Routing")
                     GlassCard {
-                        InfoRow("DNS", if (profile?.dnsMode == DnsMode.LOCAL) "Local · ${settings.dnsIp()}" else "Remote · ${settings.remoteDnsServer()}")
+                        if (profile?.protocol == Protocol.OPENVPN) InfoRow("DNS", "Pushed by the server (fallback ${settings.dnsIp()})")
+                        else InfoRow("DNS", if (profile?.dnsMode == DnsMode.LOCAL) "Local · ${settings.dnsIp()}" else "Remote · ${settings.remoteDnsServer()}")
                         InfoRow("IPv6", when (settings.ipv6Mode) { Ipv6Mode.BLOCK -> "Blocked (no leaks)"; Ipv6Mode.PROXY -> "Proxied"; Ipv6Mode.BYPASS -> "Bypasses VPN" })
                         InfoRow("Apps", when (settings.perAppMode) {
                             PerAppMode.ALL -> "All apps"
@@ -113,6 +116,7 @@ fun DetailsScreen(vm: MainViewModel, onBack: () -> Unit) {
                             Protocol.HTTP -> "Not supported by HTTP proxies (blocked)"
                             Protocol.SOCKS5 -> "SOCKS5 UDP ASSOCIATE"
                             Protocol.VLESS -> "VLESS UDP over the tunnel"
+                            Protocol.OPENVPN -> "Carried natively by OpenVPN"
                             null -> "—"
                         })
                         InfoRow("Kill switch", if (settings.killSwitch) "On (tunnel kept during reconnect)" else "Off")

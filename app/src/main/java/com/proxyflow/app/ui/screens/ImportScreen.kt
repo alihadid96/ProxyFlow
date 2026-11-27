@@ -26,6 +26,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.FileOpen
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
@@ -65,7 +66,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @Composable
-fun ImportScreen(vm: MainViewModel, initialText: String?, onBack: () -> Unit, onDone: () -> Unit) {
+fun ImportScreen(vm: MainViewModel, initialText: String?, onBack: () -> Unit, onDone: () -> Unit, onOpenOvpn: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var text by rememberSaveable { mutableStateOf(initialText.orEmpty()) }
@@ -75,6 +76,11 @@ fun ImportScreen(vm: MainViewModel, initialText: String?, onBack: () -> Unit, on
 
     val scanner = rememberLauncherForActivityResult(ScanContract()) { r ->
         if (r.contents != null) text = (text.trim() + "\n" + r.contents).trim()
+    }
+    val ovpnPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) runCatching { com.proxyflow.app.ui.readTextDocument(context, uri) }
+            .onSuccess { (n, t) -> vm.setPendingOvpn(n, t); onOpenOvpn() }
+            .onFailure { info = it.message }
     }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) scope.launch {
@@ -91,6 +97,17 @@ fun ImportScreen(vm: MainViewModel, initialText: String?, onBack: () -> Unit, on
             ) {
                 Column(Modifier.widthIn(max = 640.dp)) {
                     GlassCard {
+                        Text("OpenVPN", style = MaterialTheme.typography.titleMedium)
+                        Text("Import an .ovpn configuration file from your VPN provider or server.",
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(Modifier.height(8.dp))
+                        Button(onClick = { ovpnPicker.launch(arrayOf("*/*")) }, modifier = Modifier.fillMaxWidth()) {
+                            Icon(Icons.Filled.FileOpen, null); Spacer(Modifier.width(8.dp)); Text("Open .ovpn file")
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    GlassCard {
+                        Text("Proxy links", style = MaterialTheme.typography.titleMedium)
                         Text("Supported: vless://, socks5://, socks://, http:// links — one per line — or a base64 subscription blob.",
                             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(Modifier.height(10.dp))

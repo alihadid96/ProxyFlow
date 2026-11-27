@@ -37,6 +37,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val measure = VpnState.measure
     val logs = VpnState.logs
 
+    /** An .ovpn file waiting to be opened in the editor: (suggested name, file content). */
+    private val _pendingOvpn = MutableStateFlow<Pair<String, String>?>(null)
+    val pendingOvpn: StateFlow<Pair<String, String>?> = _pendingOvpn.asStateFlow()
+    fun setPendingOvpn(name: String, text: String) { _pendingOvpn.value = name to text }
+    fun consumePendingOvpn(): Pair<String, String>? = _pendingOvpn.value.also { _pendingOvpn.value = null }
+
     private val _testing = MutableStateFlow<Set<Long>>(emptySet())
     val testing: StateFlow<Set<Long>> = _testing.asStateFlow()
 

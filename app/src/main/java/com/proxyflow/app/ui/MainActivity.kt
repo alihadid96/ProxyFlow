@@ -50,11 +50,13 @@ import kotlinx.coroutines.flow.first
 class MainActivity : ComponentActivity() {
     private val vm: MainViewModel by viewModels()
     private var pendingImport by mutableStateOf<String?>(null)
+    private var openOvpnFromIntent by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         pendingImport = extractImport(intent)
+        handleOvpnIntent(intent)
 
         setContent {
             val settings by vm.settings.collectAsStateWithLifecycle()
@@ -90,6 +92,10 @@ class MainActivity : ComponentActivity() {
             LaunchedEffect(pendingImport) {
                 if (pendingImport != null) nav.navigate("import")
             }
+            val pendingOvpn by vm.pendingOvpn.collectAsStateWithLifecycle()
+            LaunchedEffect(pendingOvpn, openOvpnFromIntent) {
+                if (pendingOvpn != null && openOvpnFromIntent) { openOvpnFromIntent = false; nav.navigate("add") }
+            }
 
             ProxyFlowTheme(settings.theme) {
                 Box(Modifier.fillMaxSize()) {
@@ -124,7 +130,7 @@ class MainActivity : ComponentActivity() {
                             val initial = remember { pendingImport.also { pendingImport = null } }
                             ImportScreen(vm, initial, onBack = { nav.popBackStack() }, onDone = {
                                 nav.popBackStack("dashboard", false); nav.navigate("profiles")
-                            })
+                            }, onOpenOvpn = { nav.navigate("add") })
                         }
                         composable("about") { AboutScreen { nav.popBackStack() } }
                     }
@@ -137,6 +143,25 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         extractImport(intent)?.let { pendingImport = it }
+        handleOvpnIntent(intent)
+    }
+
+    /** .ovpn files opened from a file manager or shared from another app. */
+    private fun handleOvpnIntent(intent: Intent?) {
+        val uri: android.net.Uri? = when (intent?.action) {
+            Intent.ACTION_VIEW -> intent.data?.takeIf { it.scheme == "content" || it.scheme == "file" }
+            Intent.ACTION_SEND -> if (Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra(Intent.EXTRA_STREAM, android.net.Uri::class.java)
+                else @Suppress("DEPRECATION") intent.getParcelableExtra<android.net.Uri>(Intent.EXTRA_STREAM)
+            else -> null
+        }
+        if (uri == null) return
+        runCatching { readTextDocument(this, uri) }
+            .onSuccess { (name, text) ->
+                if (text.contains("remote", true) && (text.contains("<ca>") || text.contains("client"))) {
+                    vm.setPendingOvpn(name, text); openOvpnFromIntent = true
+                } else vm.toast("That file does not look like an OpenVPN configuration")
+            }
+            .onFailure { vm.toast("Could not read the file: ${it.message}") }
     }
 
     private fun extractImport(intent: Intent?): String? = when (intent?.action) {

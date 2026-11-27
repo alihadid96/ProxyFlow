@@ -30,9 +30,9 @@ jobs:
           go-version-file: native-build/xray/go.mod
           cache-dependency-path: native-build/xray/go.sum
 
-      - name: Cache native libraries
+      - name: Restore native libraries
         id: native-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: app/src/main/jniLibs
           key: native-${{ env.XRAY_VERSION }}-${{ env.HEV_VERSION }}-${{ env.ICS_VERSION }}-${{ hashFiles('scripts/build-native.sh') }}
@@ -45,16 +45,25 @@ jobs:
           export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018"
           ./scripts/build-native.sh
 
+      - name: Save native libraries
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: app/src/main/jniLibs
+          key: ${{ steps.native-cache.outputs.cache-primary-key }}
+
       - uses: gradle/actions/setup-gradle@v4
+        with:
+          validate-wrappers: false
 
       - name: Unit tests
-        run: ./gradlew --no-daemon testDebugUnitTest -PxrayVersion=$XRAY_VERSION -PhevVersion=$HEV_VERSION
+        run: ./gradlew --no-daemon testDebugUnitTest -PxrayVersion=$XRAY_VERSION -PhevVersion=$HEV_VERSION -PicsVersion=$ICS_VERSION
 
       - name: End-to-end test of generated Xray configs (real Xray-core, real upstream servers)
         run: ./scripts/e2e-xray.sh
 
       - name: Assemble debug and release APKs
-        run: ./gradlew --no-daemon assembleDebug assembleRelease -PxrayVersion=$XRAY_VERSION -PhevVersion=$HEV_VERSION
+        run: ./gradlew --no-daemon assembleDebug assembleRelease -PxrayVersion=$XRAY_VERSION -PhevVersion=$HEV_VERSION -PicsVersion=$ICS_VERSION
 
       - name: Verify APK contents
         run: |
@@ -64,6 +73,7 @@ jobs:
           BT=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -1)
           $BT/apksigner verify --print-certs "$APK" | head -5
           $BT/aapt2 dump badging "$APK" | head -3
+          $BT/aapt2 dump xmltree --file AndroidManifest.xml "$APK" | grep -i "extractNativeLibs"
           mkdir -p dist
           cp app/build/outputs/apk/release/*.apk dist/
           cp app/build/outputs/apk/debug/*.apk dist/
@@ -84,7 +94,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="build-${{ github.run_number }}"
-          gh release create "$TAG" dist/*.apk dist/e2e-report.txt --title "ProxyFlow 1.0.0 (build ${{ github.run_number }})" \
+          gh release create "$TAG" dist/*.apk dist/e2e-report.txt --title "ProxyFlow 1.1.0 (build ${{ github.run_number }})" \
             --notes "Automated build from ${{ github.sha }}. Install app-arm64-v8a-release.apk on most modern phones, or app-universal-release.apk if unsure." \
             --target "${{ github.sha }}"
 

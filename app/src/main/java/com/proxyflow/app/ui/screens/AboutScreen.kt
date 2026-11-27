@@ -58,6 +58,7 @@ fun AboutScreen(onBack: () -> Unit) {
                     SectionTitle("Engine")
                     GlassCard {
                         InfoRow("Xray-core", xrayVersion.ifEmpty { BuildConfig.XRAY_VERSION })
+                        InfoRow("OpenVPN", BuildConfig.OVPN_VERSION)
                         InfoRow("hev-socks5-tunnel", BuildConfig.HEV_VERSION + if (TProxyService.loadError == null) "" else " (failed to load)")
                         InfoRow("Device ABI", android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "?")
                         InfoRow("Android", "${android.os.Build.VERSION.RELEASE} (API ${android.os.Build.VERSION.SDK_INT})")
@@ -68,7 +69,8 @@ fun AboutScreen(onBack: () -> Unit) {
                             "ProxyFlow uses Android's VpnService to create a TUN interface. hev-socks5-tunnel turns the captured IP packets " +
                                 "back into TCP/UDP connections and hands them to a local, password-protected Xray-core instance, which forwards them " +
                                 "to your HTTP (CONNECT), SOCKS5 or VLESS server. No root is required. ProxyFlow itself is excluded from the VPN so " +
-                                "its upstream connections never loop.",
+                                "its upstream connections never loop. OpenVPN profiles run the OpenVPN 2.6 core instead, which ProxyFlow " +
+                                "controls over its management interface; its server connection is protected from the tunnel.",
                             style = MaterialTheme.typography.bodyMedium,
                         )
                     }
@@ -78,6 +80,7 @@ fun AboutScreen(onBack: () -> Unit) {
                             "• SOCKS5 UDP needs a server that supports UDP ASSOCIATE.\n" +
                             "• VLESS HTTP/2 transport was removed from Xray-core — use XHTTP.\n" +
                             "• \"Allow insecure\" TLS is no longer supported by Xray-core; use certificate pinning.\n" +
+                            "• OpenVPN: only tun (layer 3) servers; certificates must be embedded in the .ovpn file. Traffic counters show encrypted link bytes.\n" +
                             "• Android only lets one VPN run at a time.",
                             style = MaterialTheme.typography.bodyMedium)
                     }
@@ -85,11 +88,15 @@ fun AboutScreen(onBack: () -> Unit) {
                     GlassCard {
                         Text("No analytics, tracking or cloud sync. Profiles stay on this device; usernames, passwords and UUIDs are encrypted " +
                             "with an Android Keystore key and never logged. The only network request ProxyFlow makes on its own is the optional exit-IP " +
-                            "lookup (ipinfo.io) and the latency probe (gstatic.com/generate_204), both sent through your proxy.",
+                            "lookup (ipinfo.io) and the latency probe (gstatic.com/generate_204), both sent through your proxy or VPN.",
                             style = MaterialTheme.typography.bodyMedium)
                     }
                     SectionTitle("Open-source licenses")
                     GlassCard {
+                        InfoRow("ProxyFlow", "GPL-2.0 (because it includes OpenVPN)")
+                        InfoRow("OpenVPN 2.x, OpenVPN for Android", "GPL-2.0")
+                        InfoRow("OpenSSL", "Apache-2.0")
+                        InfoRow("LZ4 / LZO", "BSD-2 / GPL-2.0")
                         InfoRow("Xray-core", "MPL-2.0")
                         InfoRow("hev-socks5-tunnel", "MIT")
                         InfoRow("lwIP", "BSD-3-Clause")

@@ -15,10 +15,11 @@ android {
         applicationId = "com.proxyflow.app"
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.1.0"
         buildConfigField("String", "XRAY_VERSION", "\"${project.findProperty("xrayVersion") ?: "v26.11.9"}\"")
         buildConfigField("String", "HEV_VERSION", "\"${project.findProperty("hevVersion") ?: "2.9.3"}\"")
+        buildConfigField("String", "OVPN_VERSION", "\"OpenVPN 2.6 (ics-openvpn ${project.findProperty("icsVersion") ?: "v0.7.69"})\"")
     }
 
     signingConfigs {
