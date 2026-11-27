@@ -39,7 +39,9 @@ jobs:
       - name: Build Xray-core and hev-socks5-tunnel
         if: steps.native-cache.outputs.cache-hit != 'true'
         run: |
-          export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          # Pin NDK r27c (LTS); NDK 30 breaks lwIP's errno include in hev-socks5-tunnel.
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;27.2.12479018" > /dev/null
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018"
           ./scripts/build-native.sh
 
       - uses: gradle/actions/setup-gradle@v4
