@@ -87,6 +87,21 @@ The release keystore is in `keystore/proxyflow-release.jks` (password `proxyflow
 
 AGP 8.7.3 · Gradle 8.11.1 · Kotlin 2.0.21 · KSP 2.0.21-1.0.28 · Compose BOM 2024.12.01 · Room 2.6.1 · DataStore 1.1.1 · Navigation 2.8.5 · Coroutines 1.9.0 · ZXing 3.5.3 / zxing-android-embedded 4.3.0 · Xray-core v26.11.9 · hev-socks5-tunnel 2.9.3 · OpenVPN 2.6 via ics-openvpn v0.7.69 · minSdk 29 (Android 10) · targetSdk 35 (Android 15)
 
+## Testing
+
+Every push runs these checks in GitHub Actions. The reports are attached to each release.
+
+* **Unit tests (JVM):** link parsing and export, `.ovpn` parsing and cleanup, Xray config generation. They also run the real SOCKS5 and HTTP CONNECT clients against local test proxies: with and without auth, wrong password, unreachable server, timeout.
+* **Xray end-to-end (Linux):** the generated configs are run by real Xray-core through real HTTP, SOCKS5 and VLESS servers.
+* **On-device (Android 14 emulator):** the debug APK is installed and the VPN is switched on. A separate ordinary app then makes HTTP requests through ProxyFlow's TUN interface. The test checks the result on the server side, in the proxy's access log or with a packet capture on the OpenVPN server's tunnel. It covers:
+  * HTTP, SOCKS5, VLESS TCP, VLESS WebSocket, OpenVPN UDP (tls-crypt) and OpenVPN TCP (username/password)
+  * rejection of wrong passwords (HTTP, SOCKS5, OpenVPN), a wrong VLESS UUID and an unreachable server
+  * switching Wi-Fi to mobile data and back
+  * a proxy outage (no leak while it's down, traffic resumes afterwards)
+  * the kill switch while the OpenVPN server is down, OpenVPN automatic reconnect, and direct Internet coming back after disconnecting
+
+Not covered automatically: VLESS with real TLS or REALITY servers (only the configs are validated, because those need a real server and domain), physical phones, and battery behaviour on specific manufacturers' Android builds.
+
 ## License
 
 ProxyFlow includes OpenVPN, which is GPL-2.0, so ProxyFlow as a whole is distributed under the **GNU GPL v2** (see `LICENSE`). If you distribute the APK, you must also offer its source code. This public repository satisfies that.
