@@ -8,6 +8,7 @@ on:
 env:
   XRAY_VERSION: v26.11.9
   HEV_VERSION: "2.9.3"
+  ICS_VERSION: v0.7.69
 
 jobs:
   build:
@@ -34,7 +35,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: app/src/main/jniLibs
-          key: native-${{ env.XRAY_VERSION }}-${{ env.HEV_VERSION }}-${{ hashFiles('scripts/build-native.sh') }}
+          key: native-${{ env.XRAY_VERSION }}-${{ env.HEV_VERSION }}-${{ env.ICS_VERSION }}-${{ hashFiles('scripts/build-native.sh') }}
 
       - name: Build Xray-core and hev-socks5-tunnel
         if: steps.native-cache.outputs.cache-hit != 'true'
@@ -59,7 +60,7 @@ jobs:
         run: |
           set -e
           APK=app/build/outputs/apk/release/app-universal-release.apk
-          unzip -l "$APK" | grep -E "lib/.*/(libxray|libhev-socks5-tunnel)\.so"
+          unzip -l "$APK" | grep -E "lib/.*/(libxray|libhev-socks5-tunnel|libopenvpn|libovpnexec)\.so"
           BT=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -1)
           $BT/apksigner verify --print-certs "$APK" | head -5
           $BT/aapt2 dump badging "$APK" | head -3

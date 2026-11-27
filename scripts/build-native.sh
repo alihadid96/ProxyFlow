@@ -7,6 +7,7 @@ set -euo pipefail
 
 XRAY_VERSION="${XRAY_VERSION:-v26.11.9}"
 HEV_VERSION="${HEV_VERSION:-2.9.3}"
+ICS_VERSION="${ICS_VERSION:-v0.7.69}"   # OpenVPN for Android: provides the OpenVPN 2.6 core + OpenSSL build
 API=29
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$ROOT/native-build"
@@ -51,6 +52,27 @@ pushd "$WORK/hev" >/dev/null
 popd >/dev/null
 for abi in arm64-v8a armeabi-v7a x86_64; do
   cp "$WORK/hev-libs/$abi/libhev-socks5-tunnel.so" "$OUT/$abi/"
+done
+
+# ---------- OpenVPN 2.x (from ics-openvpn, GPLv2) ----------
+# Produces libopenvpn.so (OpenVPN core, OpenSSL statically linked) and libovpnexec.so (PIE launcher).
+if [ ! -d "$WORK/ics" ]; then
+  git clone --depth 1 --branch "$ICS_VERSION" https://github.com/schwabe/ics-openvpn "$WORK/ics"
+  (cd "$WORK/ics" && git submodule update --init --depth 1 \
+      main/src/main/cpp/openvpn main/src/main/cpp/openssl main/src/main/cpp/lz4 main/src/main/cpp/fmt)
+fi
+for abi in arm64-v8a armeabi-v7a x86_64; do
+  echo ">> OpenVPN for $abi"
+  B="$WORK/ovpn-build/$abi"
+  # A "skeleton" output path makes ics-openvpn's CMake skip the OpenVPN3/SWIG parts we don't need.
+  LIBOUT="$WORK/ovpn-out/build/intermediates/cmake/skeleton/$abi"
+  cmake -S "$WORK/ics/main/src/main/cpp" -B "$B" \
+    -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+    -DANDROID_ABI="$abi" -DANDROID_PLATFORM="android-$API" -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_LIBRARY_OUTPUT_DIRECTORY="$LIBOUT" -DCMAKE_RUNTIME_OUTPUT_DIRECTORY="$LIBOUT" > "$WORK/ovpn-cmake-$abi.log"
+  cmake --build "$B" --target libovpnexec.so -j"$(nproc)"
+  cp "$LIBOUT/libovpnexec.so" "$LIBOUT/libopenvpn.so" "$OUT/$abi/"
+  "$TOOLCHAIN/llvm-strip" "$OUT/$abi/libovpnexec.so" "$OUT/$abi/libopenvpn.so"
 done
 
 ls -la "$OUT"/*
