@@ -50,6 +50,19 @@ probe() { # one HTTP request from a separate, ordinary app (own UID) — like an
   echo "PROBE_TIMEOUT"
 }
 
+dump_diag() {
+  {
+    echo "--- app log ---"; adb logcat -d -s ProxyFlowLog:I ProxyFlowState:I ProxyFlowProbe:I | tail -30
+    echo "--- crash ---"; adb logcat -d -b crash | grep -E "Abort message|signal [0-9]+|JNI|Exception|Caused by|at com.proxyflow" | head -15
+    echo "--- upstream access log (last 12) ---"; tail -12 $W/access.log 2>/dev/null
+    echo "--- device DNS/routing ---"; adb shell dumpsys connectivity 2>/dev/null | grep -iE "VPN.*(CONNECTED|DnsAddresses)|DnsAddresses" | head -4 | cut -c1-220
+  } | tee -a $REPORT
+}
+
+ovpn_rx() { # bytes received by the OpenVPN server from the client (status-version 2)
+  sudo awk -F, '$1=="CLIENT_LIST" {print $6; exit}' $W/status-$1.log 2>/dev/null || echo 0
+}
+
 run_case() { # name expect(ok|error:<text>) proof(xray|nat:<net>) kind(link|ovpn) value [user pass]
   local name=$1 expect=$2 proof=$3 kind=$4 value=$5 user=${6:-} pass=${7:-}
   adb logcat -c
@@ -73,13 +86,16 @@ run_case() { # name expect(ok|error:<text>) proof(xray|nat:<net>) kind(link|ovpn
   # Give ConnectivityService a moment to apply the VPN's routes/UID ranges.
   for _ in $(seq 1 10); do adb shell dumpsys connectivity 2>/dev/null | grep -q "VPN CONNECTED\|VPN.*CONNECTED" && break; sleep 1; done
   sleep 3
+  local before_rx=0; [[ $proof == ovpn:* ]] && { sleep 2; before_rx=$(ovpn_rx ${proof#ovpn:}); }
   local resp; resp=$(probe)
+  [[ $proof == ovpn:* ]] && sleep 3
   local ok_proof=no detail=""
   case $proof in
     xray) grep -q "www.gstatic.com:80" $W/access.log && ok_proof=yes; detail="upstream access log: $(grep -c accepted $W/access.log) connection(s)";;
-    nat:*) local net=${proof#nat:}; local pk
-           pk=$(sudo iptables -L FORWARD -v -n -x | awk -v n="$net/24" '$8 == n {print $1; exit}')
-           [ "${pk:-0}" -gt 0 ] && ok_proof=yes; detail="VPN server forwarded ${pk:-0} packet(s) from the tunnel subnet $net/24 to the Internet";;
+    ovpn:*) local st=${proof#ovpn:}; local after
+           after=$(ovpn_rx $st)
+           [ $((after - before_rx)) -gt 300 ] && ok_proof=yes
+           detail="OpenVPN server received $((after - before_rx)) bytes from the phone's tunnel during the request";;
   esac
   sleep 2
   local traffic; traffic=$(adb logcat -d -s ProxyFlowState:I | grep TRAFFIC | tail -1 | sed 's/.*TRAFFIC //')
@@ -99,8 +115,8 @@ run_case "HTTP proxy + auth"          ok xray link "http://huser:hpass@10.0.2.2:
 run_case "SOCKS5 proxy + auth"        ok xray link "socks5://suser:spass@10.0.2.2:11080#ci-socks"
 run_case "VLESS TCP"                  ok xray link "vless://$UUID@10.0.2.2:14443?type=tcp&security=none#ci-vless"
 run_case "VLESS WebSocket"            ok xray link "vless://$UUID@10.0.2.2:14444?type=ws&path=%2Fws&security=none#ci-ws"
-run_case "OpenVPN UDP + tls-crypt"    ok nat:10.8.0.0 ovpn "$OVPN_UDP"
-run_case "OpenVPN TCP + user/pass"    ok nat:10.9.0.0 ovpn "$OVPN_TCP" ovuser ovpass
+run_case "OpenVPN UDP + tls-crypt"    ok ovpn:udp ovpn "$OVPN_UDP"
+run_case "OpenVPN TCP + user/pass"    ok ovpn:tcp ovpn "$OVPN_TCP" ovuser ovpass
 run_case "HTTP wrong password"        error:authentication - link "http://huser:WRONG@10.0.2.2:18080#ci-bad"
 run_case "SOCKS5 wrong password"      error:authentication - link "socks5://suser:WRONG@10.0.2.2:11080#ci-bad2"
 run_case "Unreachable proxy"          error:reach - link "http://10.0.2.2:9#ci-dead"

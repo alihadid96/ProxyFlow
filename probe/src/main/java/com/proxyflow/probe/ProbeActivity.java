@@ -1,6 +1,7 @@
 package com.proxyflow.probe;
 
 import android.app.Activity;
+import android.net.Uri;
 import android.os.Bundle;
 import android.util.Log;
 import java.net.HttpURLConnection;
@@ -15,6 +16,14 @@ public class ProbeActivity extends Activity {
         final String url = extra != null ? extra : "http://www.gstatic.com/generate_204";
         new Thread(() -> {
             String result;
+            String host = Uri.parse(url).getHost();
+            String dns;
+            try {
+                dns = "dns=" + java.net.InetAddress.getByName(host).getHostAddress();
+            } catch (Exception e) {
+                dns = "dns_error=" + e.getMessage();
+            }
+            Log.i("ProxyFlowProbe", "DNS " + dns);
             try {
                 HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
                 c.setConnectTimeout(15000);

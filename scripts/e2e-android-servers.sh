@@ -54,6 +54,8 @@ proto udp
 dev tun10
 server 10.8.0.0 255.255.255.0
 tls-crypt $W/tc.key
+status $W/status-udp.log 1
+status-version 2
 $common
 C
 cat > server-tcp.conf <<C
@@ -63,6 +65,8 @@ dev tun11
 server 10.9.0.0 255.255.255.0
 script-security 2
 auth-user-pass-verify $W/check.sh via-file
+status $W/status-tcp.log 1
+status-version 2
 $common
 C
 sudo openvpn --config server-udp.conf --daemon --log $W/server-udp.log
