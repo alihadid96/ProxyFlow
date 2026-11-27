@@ -17,6 +17,7 @@ log "Device: $(adb shell getprop ro.product.model | tr -d '\r') · Android $(adb
 adb install -r -g "$APK" > /dev/null || { log "FAIL install"; exit 1; }
 adb shell appops set $PKG ACTIVATE_VPN allow
 adb shell cmd deviceidle whitelist +$PKG > /dev/null 2>&1 || true
+adb logcat -b crash -c
 
 # Wait until logcat shows a final state. Prints the matching line.
 wait_state() { # timeout
@@ -45,8 +46,10 @@ probe() { # HTTP request from the device shell (shell UID is routed through the 
 dump_diag() {
   {
     echo "--- app log ---"; adb logcat -d -s ProxyFlowLog:I ProxyFlowState:I | tail -25
-    echo "--- errors ---"; adb logcat -d | grep -E "AndroidRuntime|FATAL|proxyflow" | tail -15
+    echo "--- crash ---"; adb logcat -d -b crash | grep -E "Abort message|signal [0-9]+|#0[0-9] pc|JNI|Exception|Caused by|at com.proxyflow" | head -25
     echo "--- routing ---"; adb shell ip route get 1.1.1.1 uid 2000 2>&1 | head -2
+    adb shell ip rule 2>&1 | grep -iE "tun|uidrange|vpn" | head -12
+    adb shell ip addr 2>&1 | grep -E "tun[0-9]" -A2 | head -6
     adb shell dumpsys connectivity 2>/dev/null | grep -E "NetworkAgentInfo.*VPN" | head -2 | cut -c1-200
   } | tee -a $REPORT
 }
@@ -60,7 +63,7 @@ run_case() { # name expect(ok|error:<text>) proof(xray|nat:<net>) kind(link|ovpn
   local cmd="am start -n $CTL --es cmd connect --es $kind '$value'"
   [ -n "$user" ] && cmd="$cmd --es user '$user' --es pass '$pass'"
   adb shell "$cmd" > /dev/null
-  local st; st=$(wait_state 75)
+  local st; st=$(wait_state 50)
   if [[ $expect == error:* ]]; then
     local want=${expect#error:}
     if echo "$st" | grep -q "STATE ERROR" && echo "$st" | grep -qi "$want"; then
