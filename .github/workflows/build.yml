@@ -86,16 +86,64 @@ jobs:
           path: |
             dist/*.apk
             dist/e2e-report.txt
-            app/build/reports/tests/
 
+  android-e2e:
+    name: On-device test (Android emulator)
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ProxyFlow-APKs
+          path: dist
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Start upstream HTTP / SOCKS5 / VLESS / OpenVPN servers
+        run: ./scripts/e2e-android-servers.sh
+      - name: Run app on emulator through real servers
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot
+          script: ./scripts/e2e-android.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-android-report
+          path: e2e-android-report.txt
+
+  release:
+    needs: [build, android-e2e]
+    if: always() && needs.build.result == 'success' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ProxyFlow-APKs
+          path: dist
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: e2e-android-report
+          path: dist
       - name: Publish release
-        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
+          E2E: ${{ needs.android-e2e.result }}
         run: |
           TAG="build-${{ github.run_number }}"
-          gh release create "$TAG" dist/*.apk dist/e2e-report.txt --title "ProxyFlow 1.1.0 (build ${{ github.run_number }})" \
-            --notes "Automated build from ${{ github.sha }}. Install app-arm64-v8a-release.apk on most modern phones, or app-universal-release.apk if unsure." \
+          ls -la dist
+          gh release create "$TAG" dist/*.apk dist/*.txt --title "ProxyFlow 1.1.0 (build ${{ github.run_number }})" \
+            --notes "Automated build from ${{ github.sha }}. On-device emulator test: $E2E. Install app-arm64-v8a-release.apk on most modern phones, or app-universal-release.apk if unsure." \
             --target "${{ github.sha }}"
 
 permissions:

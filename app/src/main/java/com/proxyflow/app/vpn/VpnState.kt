@@ -57,14 +57,28 @@ object VpnState {
     private val _logs = MutableStateFlow<List<String>>(emptyList())
     val logs: StateFlow<List<String>> = _logs.asStateFlow()
 
-    fun setStatus(transform: (ConnectionStatus) -> ConnectionStatus) { _status.value = transform(_status.value) }
-    fun setTraffic(t: TrafficStats) { _traffic.value = t }
+    fun setStatus(transform: (ConnectionStatus) -> ConnectionStatus) {
+        val old = _status.value
+        val new = transform(old)
+        _status.value = new
+        // Debug builds only: machine-readable state for automated device tests (scripts/e2e-android.sh).
+        if (com.proxyflow.app.BuildConfig.DEBUG && (old.state != new.state || old.message != new.message)) {
+            android.util.Log.i("ProxyFlowState", "STATE ${new.state} ${new.message ?: ""}")
+        }
+    }
+    fun setTraffic(t: TrafficStats) {
+        _traffic.value = t
+        if (com.proxyflow.app.BuildConfig.DEBUG && (t.uploadSpeed > 0 || t.downloadSpeed > 0)) {
+            android.util.Log.i("ProxyFlowState", "TRAFFIC up=${t.uploadBytes} down=${t.downloadBytes}")
+        }
+    }
     fun setMeasure(transform: (Measurements) -> Measurements) { _measure.value = transform(_measure.value) }
 
     fun log(line: String) {
         val ts = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())
         val l = _logs.value
         _logs.value = (if (l.size >= 200) l.drop(l.size - 199) else l) + "$ts  $line"
+        if (com.proxyflow.app.BuildConfig.DEBUG) android.util.Log.i("ProxyFlowLog", line)
     }
 
     fun clearLogs() { _logs.value = emptyList() }

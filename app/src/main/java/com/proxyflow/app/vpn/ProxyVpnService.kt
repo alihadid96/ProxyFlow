@@ -179,9 +179,40 @@ class ProxyVpnService : VpnService() {
             }
             TProxyService.loadError?.let { throw IllegalStateException("Tunnel library failed to load: ${it.message}") }
 
+            val timeoutMs = (if (p.timeoutSec > 0) p.timeoutSec else s.connectTimeoutSec) * 1000
+            if (p.protocol == Protocol.HTTP || p.protocol == Protocol.SOCKS5) {
+                // Pre-flight with ProxyFlow's own HTTP/SOCKS5 client: gives precise errors (wrong password,
+                // unreachable proxy) instead of a VPN that is "connected" but passes no traffic.
+                VpnState.setStatus { it.copy(message = "Checking proxy…") }
+                try {
+                    val ms = ProxyTester.urlTest(ProxyTester.directTunnel(p), timeoutMs)
+                    VpnState.log("Proxy check OK (${ms} ms)")
+                } catch (e: com.proxyflow.app.core.ProxyException) {
+                    if (e.kind != com.proxyflow.app.core.ProxyException.Kind.TARGET) throw e
+                    VpnState.log("Proxy check: ${e.message} — continuing")
+                } catch (e: java.io.IOException) {
+                    VpnState.log("Proxy check: ${ProxyTester.friendly(e)} — continuing")
+                }
+            }
+
             val ib = XrayProcess.newInbound()
             inbound = ib
             startXray(p, ib)
+            if (p.protocol == Protocol.VLESS) {
+                VpnState.setStatus { it.copy(message = "Checking VLESS server…") }
+                var lastErr: Exception? = null
+                for (attempt in 1..2) {
+                    try {
+                        val ms = ProxyTester.urlTest(ProxyTester.localTunnel(ib), timeoutMs)
+                        VpnState.log("VLESS check OK (${ms} ms)"); lastErr = null; break
+                    } catch (e: Exception) { lastErr = e }
+                }
+                lastErr?.let {
+                    throw com.proxyflow.app.core.ProxyException(
+                        "The VLESS server did not pass traffic (${ProxyTester.friendly(it)}). Check UUID, transport and TLS/REALITY settings."
+                    )
+                }
+            }
 
             VpnState.setStatus { it.copy(message = "Creating VPN interface…", localSocksPort = ib.port) }
             val fd = establishTun(p, s)
