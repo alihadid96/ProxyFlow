@@ -1,0 +1,12 @@
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+.DS_Store
+captures/
+.cxx/
+.externalNativeBuild/
+# native binaries are produced by scripts/build-native.sh
+app/src/main/jniLibs/
+native-build/

@@ -1,0 +1,89 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  XRAY_VERSION: v26.11.9
+  HEV_VERSION: "2.9.3"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Fetch Xray-core source (for Go version)
+        run: git clone --depth 1 --branch "$XRAY_VERSION" https://github.com/XTLS/Xray-core native-build/xray
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: native-build/xray/go.mod
+          cache-dependency-path: native-build/xray/go.sum
+
+      - name: Cache native libraries
+        id: native-cache
+        uses: actions/cache@v4
+        with:
+          path: app/src/main/jniLibs
+          key: native-${{ env.XRAY_VERSION }}-${{ env.HEV_VERSION }}-${{ hashFiles('scripts/build-native.sh') }}
+
+      - name: Build Xray-core and hev-socks5-tunnel
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          ./scripts/build-native.sh
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Unit tests
+        run: ./gradlew --no-daemon testDebugUnitTest -PxrayVersion=$XRAY_VERSION -PhevVersion=$HEV_VERSION
+
+      - name: End-to-end test of generated Xray configs (real Xray-core, real upstream servers)
+        run: ./scripts/e2e-xray.sh
+
+      - name: Assemble debug and release APKs
+        run: ./gradlew --no-daemon assembleDebug assembleRelease -PxrayVersion=$XRAY_VERSION -PhevVersion=$HEV_VERSION
+
+      - name: Verify APK contents
+        run: |
+          set -e
+          APK=app/build/outputs/apk/release/app-universal-release.apk
+          unzip -l "$APK" | grep -E "lib/.*/(libxray|libhev-socks5-tunnel)\.so"
+          BT=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -1)
+          $BT/apksigner verify --print-certs "$APK" | head -5
+          $BT/aapt2 dump badging "$APK" | head -3
+          mkdir -p dist
+          cp app/build/outputs/apk/release/*.apk dist/
+          cp app/build/outputs/apk/debug/*.apk dist/
+          cp e2e-report.txt dist/ || true
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ProxyFlow-APKs
+          path: |
+            dist/*.apk
+            dist/e2e-report.txt
+            app/build/reports/tests/
+
+      - name: Publish release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="build-${{ github.run_number }}"
+          gh release create "$TAG" dist/*.apk dist/e2e-report.txt --title "ProxyFlow 1.0.0 (build ${{ github.run_number }})" \
+            --notes "Automated build from ${{ github.sha }}. Install app-arm64-v8a-release.apk on most modern phones, or app-universal-release.apk if unsure." \
+            --target "${{ github.sha }}"
+
+permissions:
+  contents: write
