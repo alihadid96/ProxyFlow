@@ -68,7 +68,7 @@ for abi in arm64-v8a armeabi-v7a x86_64; do
   LIBOUT="$WORK/ovpn-out/build/intermediates/cmake/skeleton/$abi"
   cmake -S "$WORK/ics/main/src/main/cpp" -B "$B" \
     -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
-    -DANDROID_ABI="$abi" -DANDROID_PLATFORM="android-$API" -DCMAKE_BUILD_TYPE=Release \
+    -DANDROID_ABI="$abi" -DANDROID_PLATFORM="android-$API" -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
     -DCMAKE_LIBRARY_OUTPUT_DIRECTORY="$LIBOUT" -DCMAKE_RUNTIME_OUTPUT_DIRECTORY="$LIBOUT" > "$WORK/ovpn-cmake-$abi.log"
   cmake --build "$B" --target libovpnexec.so -j"$(nproc)"
   cp "$LIBOUT/libovpnexec.so" "$LIBOUT/libopenvpn.so" "$OUT/$abi/"
