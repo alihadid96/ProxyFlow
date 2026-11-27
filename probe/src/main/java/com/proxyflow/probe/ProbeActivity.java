@@ -12,6 +12,7 @@ public class ProbeActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        System.setProperty("http.keepAlive", "false");
         String extra = getIntent().getStringExtra("url");
         final String url = extra != null ? extra : "http://www.gstatic.com/generate_204";
         new Thread(() -> {
@@ -29,6 +30,7 @@ public class ProbeActivity extends Activity {
                 c.setConnectTimeout(15000);
                 c.setReadTimeout(15000);
                 c.setUseCaches(false);
+                c.setRequestProperty("Connection", "close"); // fresh TCP connection every time
                 result = "PROBE " + c.getResponseCode();
                 c.disconnect();
             } catch (Exception e) {

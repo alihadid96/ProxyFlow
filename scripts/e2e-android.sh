@@ -41,10 +41,15 @@ disconnect() {
 }
 
 probe() { # one HTTP request from a separate, ordinary app (own UID) — like any app on the phone
+  # Kill the probe app first: no pooled connection may survive from an earlier request.
+  adb shell am force-stop com.proxyflow.probe
+  adb logcat -d -s ProxyFlowProbe:I | grep -c PROBE > $W/probe_count
   adb shell am start -n com.proxyflow.probe/.ProbeActivity > /dev/null
   for _ in $(seq 1 25); do
-    local l; l=$(adb logcat -d -s ProxyFlowProbe:I | grep -E "PROBE" | tail -1)
-    [ -n "$l" ] && { echo "${l#*ProxyFlowProbe: }"; return; }
+    local n; n=$(adb logcat -d -s ProxyFlowProbe:I | grep -c PROBE)
+    if [ "$n" -gt "$(cat $W/probe_count)" ]; then
+      local l; l=$(adb logcat -d -s ProxyFlowProbe:I | grep PROBE | tail -1); echo "${l#*ProxyFlowProbe: }"; return
+    fi
     sleep 1
   done
   echo "PROBE_TIMEOUT"
@@ -147,8 +152,9 @@ disconnect
 # ---- Upstream outage and recovery (HTTP proxy) ----
 KEEP=1 run_case "HTTP before upstream outage" ok xray link "http://huser:hpass@10.0.2.2:18080#ci-outage"
 pkill -f "xray run -c upstream.json"; sleep 3
+log "  (proxy server processes still running after kill: $(pgrep -fc 'xray run -c upstream.json' || true))"
 r=$(probe); check "Proxy server down: no leak" $([[ $r != "PROBE 204" ]] && echo yes || echo no) "probe while the proxy server is down: '$r' (must fail, not bypass)"
-(cd $W && nohup ./xray run -c upstream.json > xray2.log 2>&1 &); sleep 4
+(cd $W && setsid nohup ./xray run -c upstream.json < /dev/null > xray2.log 2>&1 &); sleep 4
 : | sudo tee $W/access.log > /dev/null
 r=$(probe); check "Proxy server back: traffic resumes" $([[ $r == "PROBE 204" && $(seen_gstatic) == yes ]] && echo yes || echo no) "probe='$r', proxied=$(seen_gstatic)"
 disconnect
@@ -167,5 +173,6 @@ check "OpenVPN auto-reconnect after server restart" $ok "states: $states"
 sleep 3; r=$(probe); check "OpenVPN traffic after reconnect" $([[ $r == "PROBE 204" ]] && echo yes || echo no) "probe='$r'"
 disconnect
 
+pkill -f "xray run -c upstream.json" || true
 log "== Result: $pass passed, $failn failed =="
 [ "$failn" -eq 0 ]
