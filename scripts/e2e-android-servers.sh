@@ -73,7 +73,7 @@ sudo sysctl -q -w net.ipv4.ip_forward=1
 for net in 10.8.0.0/24 10.9.0.0/24; do
   sudo iptables -I FORWARD -s $net -j ACCEPT
   sudo iptables -I FORWARD -d $net -j ACCEPT
-  sudo iptables -t nat -A POSTROUTING -s $net -j MASQUERADE
+  sudo iptables -t nat -I POSTROUTING -s $net -j MASQUERADE
 done
 
 inline() { echo "<$1>"; cat "$2"; echo "</$1>"; }

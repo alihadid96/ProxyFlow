@@ -58,7 +58,7 @@ run_case() { # name expect(ok|error:<text>) proof(xray|nat:<net>) kind(link|ovpn
   local name=$1 expect=$2 proof=$3 kind=$4 value=$5 user=${6:-} pass=${7:-}
   adb logcat -c
   : | sudo tee $W/access.log > /dev/null
-  sudo iptables -t nat -Z POSTROUTING
+  sudo iptables -Z FORWARD
   # Single-quote every value for the device shell ('&', '#', '?' in links are shell metacharacters there).
   local cmd="am start -n $CTL --es cmd connect --es $kind '$value'"
   [ -n "$user" ] && cmd="$cmd --es user '$user' --es pass '$pass'"
@@ -82,8 +82,8 @@ run_case() { # name expect(ok|error:<text>) proof(xray|nat:<net>) kind(link|ovpn
   case $proof in
     xray) grep -q "www.gstatic.com:80" $W/access.log && ok_proof=yes; detail="upstream access log: $(grep -c accepted $W/access.log) connection(s)";;
     nat:*) local net=${proof#nat:}; local pk
-           pk=$(sudo iptables -t nat -L POSTROUTING -v -n -x | awk -v n="$net" '$0 ~ n {print $1}' | head -1)
-           [ "${pk:-0}" -gt 0 ] && ok_proof=yes; detail="VPN server NAT forwarded ${pk:-0} new flow(s) from $net";;
+           pk=$(sudo iptables -L FORWARD -v -n -x | awk -v n="$net/24" '$8 == n {print $1; exit}')
+           [ "${pk:-0}" -gt 0 ] && ok_proof=yes; detail="VPN server forwarded ${pk:-0} packet(s) from the tunnel subnet $net/24 to the Internet";;
   esac
   local traffic; traffic=$(adb logcat -d -s ProxyFlowState:I | grep TRAFFIC | tail -1 | sed 's/.*TRAFFIC //')
   if [[ "$resp" == *" 204"* && $ok_proof == yes ]]; then
