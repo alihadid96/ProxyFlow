@@ -64,13 +64,13 @@ ovpn_rx() { # bytes received by the OpenVPN server from the client (status-versi
 }
 
 run_case() { # name expect(ok|error:<text>) proof(xray|nat:<net>) kind(link|ovpn) value [user pass]
-  local name=$1 expect=$2 proof=$3 kind=$4 value=$5 user=${6:-} pass=${7:-}
+  local name=$1 expect=$2 proof=$3 kind=$4 value=$5 cuser=${6:-} cpass=${7:-}
   adb logcat -c
   : | sudo tee $W/access.log > /dev/null
   sudo iptables -Z FORWARD
   # Single-quote every value for the device shell ('&', '#', '?' in links are shell metacharacters there).
   local cmd="am start -n $CTL --es cmd connect --es $kind '$value'"
-  [ -n "$user" ] && cmd="$cmd --es user '$user' --es pass '$pass'"
+  [ -n "$cuser" ] && cmd="$cmd --es user '$cuser' --es pass '$cpass'"
   adb shell "$cmd" > /dev/null
   local st; st=$(wait_state 50)
   if [[ $expect == error:* ]]; then
@@ -110,7 +110,7 @@ run_case() { # name expect(ok|error:<text>) proof(xray|nat:<net>) kind(link|ovpn
   else
     log "FAIL $name — response='$resp' proof=$ok_proof ($detail)"; dump_diag; failn=$((failn+1))
   fi
-  disconnect
+  [ "${KEEP:-0}" = 1 ] || disconnect
 }
 
 DIRECT=$(probe); log "Before connecting (no VPN): '$DIRECT'"
@@ -128,6 +128,44 @@ run_case "SOCKS5 wrong password"      error:authentication - link "socks5://suse
 run_case "Unreachable proxy"          error:reach - link "http://10.0.2.2:9#ci-dead"
 run_case "VLESS wrong UUID"           "error:did not pass traffic" - link "vless://00000000-0000-4000-8000-000000000000@10.0.2.2:14443?type=tcp&security=none#ci-baduuid"
 run_case "OpenVPN wrong password"     error:authentication - ovpn "$OVPN_TCP" ovuser WRONG
+
+check() { # name yes|no detail
+  if [ "$2" = yes ]; then log "PASS $1 — $3"; pass=$((pass+1)); else log "FAIL $1 — $3"; dump_diag; failn=$((failn+1)); fi
+}
+seen_gstatic() { grep -q "www.gstatic.com:80" $W/access.log && echo yes || echo no; }
+
+# ---- Switching between Wi-Fi and mobile data while connected (VLESS) ----
+KEEP=1 run_case "VLESS before network switch" ok xray link "vless://$UUID@10.0.2.2:14443?type=tcp&security=none#ci-switch"
+adb shell svc wifi disable; sleep 10
+: | sudo tee $W/access.log > /dev/null
+r=$(probe); check "Wi-Fi off → mobile data" $([[ $r == "PROBE 204" && $(seen_gstatic) == yes ]] && echo yes || echo no) "probe='$r', proxied=$(seen_gstatic); $(adb logcat -d -s ProxyFlowLog:I | grep -E 'Network|Reconnected' | tail -2 | sed 's/.*ProxyFlowLog: //' | tr '\n' ' ')"
+adb shell svc wifi enable; sleep 12
+: | sudo tee $W/access.log > /dev/null
+r=$(probe); check "Mobile data → Wi-Fi" $([[ $r == "PROBE 204" && $(seen_gstatic) == yes ]] && echo yes || echo no) "probe='$r', proxied=$(seen_gstatic)"
+disconnect
+
+# ---- Upstream outage and recovery (HTTP proxy) ----
+KEEP=1 run_case "HTTP before upstream outage" ok xray link "http://huser:hpass@10.0.2.2:18080#ci-outage"
+pkill -f "xray run -c upstream.json"; sleep 3
+r=$(probe); check "Proxy server down: no leak" $([[ $r != "PROBE 204" ]] && echo yes || echo no) "probe while the proxy server is down: '$r' (must fail, not bypass)"
+(cd $W && nohup ./xray run -c upstream.json > xray2.log 2>&1 &); sleep 4
+: | sudo tee $W/access.log > /dev/null
+r=$(probe); check "Proxy server back: traffic resumes" $([[ $r == "PROBE 204" && $(seen_gstatic) == yes ]] && echo yes || echo no) "probe='$r', proxied=$(seen_gstatic)"
+disconnect
+r=$(probe); check "Disconnect restores direct Internet" $([[ $r == "PROBE 204" ]] && echo yes || echo no) "probe after disconnect: '$r'"
+
+# ---- OpenVPN server restart: kill switch + automatic reconnect ----
+KEEP=1 run_case "OpenVPN before server restart" ok ovpn:tcp ovpn "$OVPN_TCP" ovuser ovpass
+adb logcat -c
+sudo pkill -f "server-tcp.conf"; sleep 4
+r=$(probe); check "OpenVPN server down: kill switch (no leak)" $([[ $r != "PROBE 204" ]] && echo yes || echo no) "probe while the VPN server is down: '$r'"
+sudo openvpn --config $W/server-tcp.conf --daemon --log $W/server-tcp2.log
+ok=no
+for _ in $(seq 1 60); do adb logcat -d -s ProxyFlowState:I | grep -q "STATE CONNECTED" && { ok=yes; break; }; sleep 1; done
+states=$(adb logcat -d -s ProxyFlowState:I | grep STATE | sed 's/.*STATE //' | cut -c1-40 | uniq | tr '\n' '>')
+check "OpenVPN auto-reconnect after server restart" $ok "states: $states"
+sleep 3; r=$(probe); check "OpenVPN traffic after reconnect" $([[ $r == "PROBE 204" ]] && echo yes || echo no) "probe='$r'"
+disconnect
 
 log "== Result: $pass passed, $failn failed =="
 [ "$failn" -eq 0 ]
