@@ -522,9 +522,7 @@ class ProxyVpnService : VpnService() {
         val f = File(cacheDir, "tunnel.yml")
         f.writeText(yaml)
         f.setReadable(false, false); f.setReadable(true, true)
-        if (!TProxyService.TProxyStartService(f.absolutePath, fd.fd)) {
-            throw IllegalStateException("Failed to start the packet forwarding engine")
-        }
+        TProxyService.TProxyStartService(f.absolutePath, fd.fd)
         hevStarted = true
     }
 
